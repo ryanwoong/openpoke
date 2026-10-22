@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Spinner } from "./ui/LoadingIndicator";
 import ModelSelector from "./ModelSelector";
 import { AnimatedDialog } from "./ui/AnimatedDialog";
 
@@ -124,7 +125,7 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
     }
   };
   const [connectingGmail, setConnectingGmail] = useState(false);
-  const [isRefreshingGmail, setIsRefreshingGmail] = useState(false);
+  const [isRefreshingGmail, setIsRefreshingGmail] = useState(true);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [gmailStatusMessage, setGmailStatusMessage] = useState("");
   const [gmailConnected, setGmailConnected] = useState(false);
@@ -244,6 +245,7 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
     const userId = readStoredUserId();
     const connectionRequestId = readStoredConnectionRequestId();
     if (!userId && !connectionRequestId) {
+      setIsRefreshingGmail(false);
       setGmailConnected(false);
       setGmailProfile(null);
       setGmailEmail("");
@@ -419,7 +421,10 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
                 <div className="text-sm font-semibold text-gray-900">Gmail (via Composio)</div>
                 <p className="mt-1 text-sm text-gray-600">Connect Gmail to unlock email search, drafting, and automations inside OpenPoke.</p>
               </div>
-              <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${gmailConnected ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-700 ring-amber-200"}`}>{gmailConnected ? "Connected" : "Not connected"}</span>
+              <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${isRefreshingGmail ? "bg-gray-50 text-gray-600 ring-gray-200" : gmailConnected ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-700 ring-amber-200"}`}>
+                {isRefreshingGmail && <Spinner />}
+                {isRefreshingGmail ? "Checking Gmail…" : gmailConnected ? "Connected" : "Not connected"}
+              </span>
             </div>
 
             {gmailConnected ? (
@@ -455,37 +460,40 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
                 className="mt-4 rounded-lg border border-dashed border-gray-200 p-3 text-sm text-gray-500"
                 aria-live="polite"
               >
-                {gmailStatusMessage || "Complete the connection to view your Gmail account details here."}
+                {isRefreshingGmail ? "Loading Gmail account details…" : gmailStatusMessage || "Complete the connection to view your Gmail account details here."}
               </div>
             )}
 
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"
-                className="btn"
+                className="btn gap-2"
                 onClick={handleConnectGmail}
                 disabled={connectingGmail || isRefreshingGmail || isDisconnecting}
                 aria-busy={connectingGmail}
               >
+                {connectingGmail && <Spinner className="rounded-full bg-white p-0.5" />}
                 {connectButtonLabel}
               </button>
               <button
                 type="button"
-                className="rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={refreshGmailStatus}
-                disabled={isRefreshingGmail || connectingGmail}
+                disabled={isRefreshingGmail || connectingGmail || isDisconnecting}
                 aria-busy={isRefreshingGmail}
               >
+                {isRefreshingGmail && <Spinner />}
                 {refreshButtonLabel}
               </button>
               {gmailConnected && (
                 <button
                   type="button"
-                  className="rounded-md border border-transparent bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center gap-2 rounded-md border border-transparent bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
                   onClick={handleDisconnectGmail}
-                  disabled={isDisconnecting || connectingGmail}
+                  disabled={isDisconnecting || connectingGmail || isRefreshingGmail}
                   aria-busy={isDisconnecting}
                 >
+                  {isDisconnecting && <Spinner />}
                   {disconnectButtonLabel}
                 </button>
               )}
@@ -511,10 +519,12 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
           Cancel
         </button>
         <button
-          className="btn"
+          className="btn gap-2"
           onClick={saveSettings}
           disabled={saving}
+          aria-busy={saving}
         >
+          {saving && <Spinner className="rounded-full bg-white p-0.5" />}
           {saving ? "Saving…" : "Save"}
         </button>
       </div>

@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { LoadingIndicator } from "./ui/LoadingIndicator";
+
 type Model = {
   id: string;
   name: string;
@@ -66,12 +68,7 @@ export default function ModelSelector({ value, onChange, onLoad, disabled }: { v
         <p className="mt-1 text-xs text-gray-500">Used for chat, tasks, email search, summaries, and email importance. Saved for this app, including background automations.</p>
       </div>
       {loading ? (
-        <p
-          className="text-sm text-gray-500"
-          role="status"
-        >
-          Loading models and pricing…
-        </p>
+        <LoadingIndicator label="Loading models and pricing…" />
       ) : error ? (
         <div
           role="alert"

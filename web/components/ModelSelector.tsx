@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { LoadingIndicator } from "./ui/LoadingIndicator";
+import styles from "./ModelSelector.module.css";
 
 type Model = {
   id: string;
@@ -20,6 +21,24 @@ function isFree(model: Model) {
   return Number(model.pricing.prompt) === 0 && Number(model.pricing.completion) === 0 && Number(model.pricing.request || 0) === 0;
 }
 
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      className={styles.chevron}
+      data-open={open}
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
 export default function ModelSelector({ value, onChange, onLoad, disabled }: { value: string; onChange: (model: string) => void; onLoad: (model: string) => void; disabled: boolean }) {
   const [models, setModels] = useState<Model[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,6 +46,15 @@ export default function ModelSelector({ value, onChange, onLoad, disabled }: { v
   const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState("");
   const [freeOnly, setFreeOnly] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [present, setPresent] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [dropdownHeight, setDropdownHeight] = useState(300);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const id = useId();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -51,138 +79,337 @@ export default function ModelSelector({ value, onChange, onLoad, disabled }: { v
   }, [attempt, onLoad]);
 
   const selected = models.find((model) => model.id === value);
-  const filtered = useMemo(() => models.filter((model) => (!freeOnly || isFree(model)) && `${model.name} ${model.id}`.toLowerCase().includes(query.toLowerCase())), [models, query, freeOnly]);
+  const filtered = useMemo(() => models.filter((model) => (!freeOnly || isFree(model)) && `${model.name} ${model.id}`.toLowerCase().includes(query.trim().toLowerCase())), [models, query, freeOnly]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const trigger = triggerRef.current;
+    const panel = trigger?.closest('[role="tabpanel"]');
+    if (!trigger || !panel) return;
+    const resize = () => setDropdownHeight(Math.max(0, Math.min(320, panel.getBoundingClientRect().bottom - trigger.getBoundingClientRect().bottom - 12)));
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(panel);
+    panel.addEventListener("scroll", resize);
+    searchRef.current?.focus({ preventScroll: true });
+    const list = listRef.current;
+    const option = list?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (list && option) list.scrollTop = option.offsetTop;
+    return () => {
+      observer.disconnect();
+      panel.removeEventListener("scroll", resize);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    const list = listRef.current;
+    const option = list?.children[activeIndex] as HTMLElement | undefined;
+    if (!open || !list || !option) return;
+    const top = option.offsetTop;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (top + option.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + option.offsetHeight - list.clientHeight;
+  }, [activeIndex, open, dropdownHeight, filtered]);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  useEffect(() => {
+    if (open || !present) return;
+    const timeout = window.setTimeout(() => setPresent(false), window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 200);
+    return () => window.clearTimeout(timeout);
+  }, [open, present]);
+
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !pickerRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [open]);
+
+  function closePicker() {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  function selectModel(model: Model) {
+    onChange(model.id);
+    closePicker();
+  }
+
+  function openPicker() {
+    setQuery("");
+    setFreeOnly(false);
+    setActiveIndex(
+      Math.max(
+        0,
+        models.findIndex((model) => model.id === value),
+      ),
+    );
+    setPresent(true);
+    setOpen(true);
+  }
 
   return (
     <section
-      className="space-y-3 rounded-xl border border-gray-200 p-4"
-      aria-labelledby="model-heading"
+      className={styles.section}
+      aria-labelledby={`${id}-heading`}
     >
-      <div>
-        <h3
-          id="model-heading"
-          className="text-sm font-semibold text-gray-900"
-        >
-          AI model · OpenRouter
-        </h3>
-        <p className="mt-1 text-xs text-gray-500">Used for chat, tasks, email search, summaries, and email importance. Saved for this app, including background automations.</p>
-      </div>
+      <header className={styles.header}>
+        <div className={styles.titleRow}>
+          <h3 id={`${id}-heading`}>AI model</h3>
+          <span className={styles.provider}>OpenRouter</span>
+        </div>
+        <p>The model behind your chats and automations.</p>
+      </header>
       {loading ? (
-        <LoadingIndicator label="Loading models and pricing…" />
+        <LoadingIndicator label="Loading models…" />
       ) : error ? (
         <div
           role="alert"
-          className="text-sm text-red-600"
+          className={styles.error}
         >
           {error}{" "}
           <button
             type="button"
-            className="underline"
             onClick={() => setAttempt((value) => value + 1)}
           >
-            Retry
+            Try again
           </button>
         </div>
       ) : (
         <>
-          <label
-            className="block text-xs font-medium text-gray-700"
-            htmlFor="model-search"
+          <div
+            ref={pickerRef}
+            className={styles.picker}
+            data-open={open}
+            onBlur={(event) => {
+              if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && open) {
+                event.preventDefault();
+                event.stopPropagation();
+                closePicker();
+              }
+            }}
           >
-            Search models
-          </label>
-          <input
-            id="model-search"
-            type="search"
-            className="input"
-            placeholder="Search by name or provider"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            disabled={disabled}
-          />
-          <label className="flex items-center gap-2 text-xs text-gray-600">
-            <input
-              type="checkbox"
-              checked={freeOnly}
-              onChange={(event) => setFreeOnly(event.target.checked)}
+            <button
+              ref={triggerRef}
+              type="button"
+              className={styles.trigger}
+              aria-label={`Choose AI model: ${selected?.name || value}`}
+              aria-expanded={open}
+              aria-haspopup="listbox"
+              aria-controls={`${id}-list`}
               disabled={disabled}
-            />
-            Show free models only
-          </label>
-          <label
-            className="block text-xs font-medium text-gray-700"
-            htmlFor="ai-model"
-          >
-            Model · input / output per 1M tokens
-          </label>
-          <select
-            id="ai-model"
-            className="w-full rounded-md border border-gray-300 bg-white p-2 text-sm"
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            disabled={disabled}
-          >
-            {!filtered.some((model) => model.id === value) && <option value={value}>{selected ? `${selected.name} (current selection)` : `${value} (unavailable)`}</option>}
-            {filtered.map((model) => (
-              <option
-                key={model.id}
-                value={model.id}
+              onClick={() => (open ? setOpen(false) : openPicker())}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  openPicker();
+                }
+              }}
+            >
+              <span className={styles.modelIdentity}>
+                <span className={styles.eyebrow}>Selected model</span>
+                <span className={styles.modelName}>{selected?.name || value || "Choose a model"}</span>
+              </span>
+              {selected && isFree(selected) && <span className={styles.freeBadge}>Free</span>}
+              <Chevron open={open} />
+            </button>
+            {present && (
+              <div
+                className={styles.dropdown}
+                data-state={open ? "open" : "closed"}
+                aria-hidden={!open}
+                onAnimationEnd={(event) => {
+                  if (event.target === event.currentTarget && !open) setPresent(false);
+                }}
+                style={{ maxHeight: dropdownHeight }}
               >
-                {model.name} — {isFree(model) ? "Free" : `${price(model.pricing.prompt, 1e6)} / ${price(model.pricing.completion, 1e6)}`}
-              </option>
-            ))}
-          </select>
-          {filtered.length === 0 && <p className="text-xs text-gray-500">No models match these filters.</p>}
+                <div className={styles.searchRow}>
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      cx="10.5"
+                      cy="10.5"
+                      r="6.5"
+                    />
+                    <path d="m16 16 4 4" />
+                  </svg>
+                  <input
+                    ref={searchRef}
+                    disabled={!open}
+                    role="combobox"
+                    aria-label="Search models by name or provider"
+                    aria-expanded={open}
+                    aria-controls={`${id}-list`}
+                    aria-autocomplete="list"
+                    aria-activedescendant={filtered[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
+                    placeholder="Search models or providers…"
+                    value={query}
+                    onChange={(event) => {
+                      setQuery(event.target.value);
+                      setActiveIndex(0);
+                    }}
+                    onKeyDown={(event) => {
+                      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && (event.key.startsWith("Arrow") || event.ctrlKey)) {
+                        event.preventDefault();
+                        setActiveIndex((index) => (event.key === "Home" ? 0 : event.key === "End" ? Math.max(0, filtered.length - 1) : Math.max(0, Math.min(filtered.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))));
+                      } else if (event.key === "Enter") {
+                        event.preventDefault();
+                        if (filtered[activeIndex]) selectModel(filtered[activeIndex]);
+                      }
+                    }}
+                  />
+                </div>
+                <div className={styles.filterRow}>
+                  <label
+                    htmlFor={`${id}-free-only`}
+                    onMouseDown={(event) => event.preventDefault()}
+                  >
+                    <input
+                      id={`${id}-free-only`}
+                      type="checkbox"
+                      disabled={!open}
+                      checked={freeOnly}
+                      onChange={(event) => {
+                        setFreeOnly(event.target.checked);
+                        setActiveIndex(0);
+                      }}
+                    />
+                    Free only
+                  </label>
+                  <span>{filtered.length} models</span>
+                </div>
+                <div
+                  id={`${id}-list`}
+                  ref={listRef}
+                  role="listbox"
+                  tabIndex={-1}
+                  aria-label="AI models"
+                  className={styles.options}
+                >
+                  {filtered.map((model, index) => (
+                    <div
+                      key={model.id}
+                      id={`${id}-option-${index}`}
+                      role="option"
+                      aria-selected={model.id === value}
+                      className={styles.option}
+                      data-active={activeIndex === index}
+                      onMouseEnter={() => setActiveIndex(index)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => selectModel(model)}
+                    >
+                      <span className={styles.modelIdentity}>
+                        <span
+                          className={styles.optionName}
+                          title={model.name}
+                        >
+                          {model.name}
+                        </span>
+                        <span className={styles.modelId}>{model.id}</span>
+                      </span>
+                      {isFree(model) ? (
+                        <span className={styles.freeBadge}>Free</span>
+                      ) : (
+                        <span className={styles.optionPrice}>
+                          <span>
+                            {price(model.pricing.prompt, 1e6)} / {price(model.pricing.completion, 1e6)}
+                          </span>
+                          <span>in / out · per 1M</span>
+                        </span>
+                      )}
+                      <span
+                        className={styles.check}
+                        aria-hidden="true"
+                      >
+                        {model.id === value ? "✓" : ""}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {filtered.length === 0 && <p className={styles.empty}>No models found. Try another search or turn off “Free only”.</p>}
+              </div>
+            )}
+          </div>
           {selected ? (
-            <div className="rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
-              <div className="break-all font-medium text-gray-900">{selected.id}</div>
-              <dl className="mt-2 grid grid-cols-2 gap-2">
+            <div className={styles.summary}>
+              <div className={styles.summaryHeading}>
+                <h4>At a glance</h4>
+                <span>USD / 1M tokens</span>
+              </div>
+              <dl className={styles.stats}>
                 <div>
-                  <dt>Input / 1M tokens</dt>
-                  <dd className="font-semibold">{price(selected.pricing.prompt, 1e6)}</dd>
+                  <dt>Input</dt>
+                  <dd>{price(selected.pricing.prompt, 1e6)}</dd>
                 </div>
                 <div>
-                  <dt>Output / 1M tokens</dt>
-                  <dd className="font-semibold">{price(selected.pricing.completion, 1e6)}</dd>
+                  <dt>Output</dt>
+                  <dd>{price(selected.pricing.completion, 1e6)}</dd>
                 </div>
-                {Number(selected.pricing.request) > 0 && (
-                  <div>
-                    <dt>Per request</dt>
-                    <dd>{price(selected.pricing.request)}</dd>
-                  </div>
-                )}
-                {selected.pricing.input_cache_read !== undefined && (
-                  <div>
-                    <dt>Cached input / 1M tokens</dt>
-                    <dd>{price(selected.pricing.input_cache_read, 1e6)}</dd>
-                  </div>
-                )}
-                {selected.pricing.input_cache_write !== undefined && (
-                  <div>
-                    <dt>Cache write / 1M tokens</dt>
-                    <dd>{price(selected.pricing.input_cache_write, 1e6)}</dd>
-                  </div>
-                )}
-                {selected.context_length != null && (
-                  <div>
-                    <dt>Context window</dt>
-                    <dd>{selected.context_length.toLocaleString()} tokens</dd>
-                  </div>
-                )}
+                <div>
+                  <dt>Context window</dt>
+                  <dd>{selected.context_length != null ? new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(selected.context_length) : "Not listed"}</dd>
+                </div>
               </dl>
             </div>
           ) : (
-            <p className="text-xs text-amber-700">This model is no longer listed. Choose an available model to change it.</p>
+            <p className={styles.warning}>This model is no longer available. Choose another model above.</p>
           )}
-          <p className="text-xs text-gray-500">USD list prices from OpenRouter, refreshed every 5 minutes. Actual charges depend on provider, usage, caching, and additional fees. One task may make multiple AI calls. Free models can have rate limits. Only models supporting text and tool calling are shown.</p>
-          <a
-            className="text-xs text-blue-600 underline"
-            href="https://openrouter.ai/models"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Compare models on OpenRouter
-          </a>
+          <details className={styles.details}>
+            <summary>Pricing & details</summary>
+            <div className={styles.detailsBody}>
+              {selected && (
+                <dl className={styles.extraPrices}>
+                  {Number(selected.pricing.request) > 0 && (
+                    <div>
+                      <dt>Per request</dt>
+                      <dd>{price(selected.pricing.request)}</dd>
+                    </div>
+                  )}
+                  {selected.pricing.input_cache_read !== undefined && (
+                    <div>
+                      <dt>Cached input / 1M tokens</dt>
+                      <dd>{price(selected.pricing.input_cache_read, 1e6)}</dd>
+                    </div>
+                  )}
+                  {selected.pricing.input_cache_write !== undefined && (
+                    <div>
+                      <dt>Cache write / 1M tokens</dt>
+                      <dd>{price(selected.pricing.input_cache_write, 1e6)}</dd>
+                    </div>
+                  )}
+                  {selected.context_length != null && (
+                    <div>
+                      <dt>Full context window</dt>
+                      <dd>{selected.context_length.toLocaleString()} tokens</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+              <p>OpenRouter list prices refresh every 5 minutes. Provider fees, caching, and usage can affect your bill. A task may use multiple AI calls. Free models may have rate limits.</p>
+              <p>Only models with text and tool support are shown.</p>
+              <a
+                href="https://openrouter.ai/models"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Compare models on OpenRouter ↗
+              </a>
+            </div>
+          </details>
         </>
       )}
     </section>

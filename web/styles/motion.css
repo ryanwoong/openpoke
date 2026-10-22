@@ -81,3 +81,24 @@ button:active:not(:disabled) {
     animation: none;
   }
 }
+
+.loading-spinner {
+  display: inline-block;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+  vertical-align: middle;
+  animation: loading-spin 850ms linear infinite;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner {
+    animation: none;
+  }
+}

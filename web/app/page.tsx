@@ -17,6 +17,8 @@ export default function Page() {
   const { settings, setSettings } = useSettings();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [messages, setMessages] = useState<ChatBubble[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
@@ -36,6 +38,8 @@ export default function Page() {
     } catch (err: any) {
       if (err?.name === "AbortError") return;
       console.error("Failed to load chat history", err);
+    } finally {
+      setIsLoadingHistory(false);
     }
   }, []);
 
@@ -170,6 +174,7 @@ export default function Page() {
   );
 
   const handleClearHistory = useCallback(async () => {
+    setIsClearingHistory(true);
     try {
       const res = await fetch("/api/chat/history", { method: "DELETE" });
       if (!res.ok) {
@@ -179,6 +184,8 @@ export default function Page() {
       setMessages([]);
     } catch (err) {
       console.error("Failed to clear chat history", err);
+    } finally {
+      setIsClearingHistory(false);
     }
   }, [setMessages]);
 
@@ -212,11 +219,14 @@ export default function Page() {
         <ChatHeader
           onOpenSettings={openSettings}
           onClearHistory={triggerClearHistory}
+          isClearingHistory={isClearingHistory}
+          isLoadingHistory={isLoadingHistory}
         />
 
         <div className="card flex-1 overflow-hidden">
           <ChatMessages
             messages={messages}
+            isLoadingHistory={isLoadingHistory}
             isWaitingForResponse={isWaitingForResponse}
             scrollContainerRef={scrollContainerRef}
             onScroll={handleScroll}

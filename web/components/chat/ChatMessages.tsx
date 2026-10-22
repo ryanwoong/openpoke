@@ -1,24 +1,36 @@
 import clsx from "clsx";
 import React, { RefObject } from "react";
 
+import { LoadingIndicator } from "../ui/LoadingIndicator";
+
 import type { ChatBubble } from "./types";
 import { MarkdownMessage } from "./MarkdownMessage";
 
 interface ChatMessagesProps {
   messages: ReadonlyArray<ChatBubble>;
   isWaitingForResponse: boolean;
+  isLoadingHistory?: boolean;
   scrollContainerRef: RefObject<HTMLDivElement | null>;
   onScroll: () => void;
 }
 
-export function ChatMessages({ messages, isWaitingForResponse, scrollContainerRef, onScroll }: ChatMessagesProps) {
+export function ChatMessages({ messages, isWaitingForResponse, isLoadingHistory = false, scrollContainerRef, onScroll }: ChatMessagesProps) {
   return (
     <div
       ref={scrollContainerRef}
       onScroll={onScroll}
+      aria-busy={isLoadingHistory}
       className="flex h-[70vh] flex-col gap-2 overflow-y-auto p-4"
     >
-      {messages.length === 0 && <EmptyState />}
+      {messages.length === 0 &&
+        (isLoadingHistory ? (
+          <LoadingIndicator
+            label="Loading your conversation…"
+            className="chat-empty flex-1 flex-col justify-center gap-3 [&>svg]:h-8 [&>svg]:w-8"
+          />
+        ) : (
+          <EmptyState />
+        ))}
 
       {messages.map((message, index) => {
         const isUser = message.role === "user";
@@ -45,20 +57,7 @@ function TypingIndicator() {
   return (
     <div className="chat-message flex justify-start">
       <div className="bubble-in bubble-tail-in">
-        <div
-          className="typing-indicator"
-          role="status"
-          aria-label="Waiting for a response"
-        >
-          <div
-            className="flex space-x-1"
-            aria-hidden="true"
-          >
-            <div className="typing-dot"></div>
-            <div className="typing-dot"></div>
-            <div className="typing-dot"></div>
-          </div>
-        </div>
+        <LoadingIndicator label="Waiting for a response…" />
       </div>
     </div>
   );

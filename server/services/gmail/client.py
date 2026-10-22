@@ -57,6 +57,8 @@ def get_integration_context() -> str:
         "Calendar: no calendar integration is available. Gmail can provide email evidence of events, but cannot read the calendar.\n"
         "This state supersedes connection claims in conversation history. When Gmail is configured, do not claim it is disconnected without a current tool failure. "
         "Use the email search task before reporting email results; the interaction agent must delegate this to an execution agent. Do not claim to have checked email without a tool result."
+        " A search transport error does not prove Gmail is disconnected. Distinguish OpenRouter failures, Gmail API failures, and a successful search with no matches. "
+        "Report the specific failed service; do not ask the user to reconnect Gmail unless a current Gmail authentication error requires it."
     )
 
 

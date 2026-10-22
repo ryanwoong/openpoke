@@ -11,10 +11,6 @@ import type { ChatBubble } from '@/components/chat/types';
 
 const POLL_INTERVAL_MS = 1500;
 
-const formatEscapeCharacters = (text: string): string => {
-  return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r').replace(/\\\\/g, '\\');
-};
-
 const isRenderableMessage = (entry: any) => typeof entry?.role === 'string' && typeof entry?.content === 'string' && entry.content.trim().length > 0;
 
 const toBubbles = (payload: any): ChatBubble[] => {
@@ -23,7 +19,7 @@ const toBubbles = (payload: any): ChatBubble[] => {
   return payload.messages.filter(isRenderableMessage).map((message: any, index: number) => ({
     id: `history-${index}`,
     role: message.role,
-    text: formatEscapeCharacters(message.content),
+    text: message.content,
   }));
 };
 
@@ -109,7 +105,7 @@ export default function Page() {
       const userMessage: ChatBubble = {
         id: `user-${Date.now()}`,
         role: 'user',
-        text: formatEscapeCharacters(trimmed),
+        text: trimmed,
       };
       setMessages((prev) => {
         const newMessages = [...prev, userMessage];

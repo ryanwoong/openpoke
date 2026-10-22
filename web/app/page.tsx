@@ -7,6 +7,7 @@ import { ChatHeader } from "@/components/chat/ChatHeader";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ErrorBanner } from "@/components/chat/ErrorBanner";
+import { useBackgroundAlerts } from "@/components/chat/useBackgroundAlerts";
 import { useAutoScroll } from "@/components/chat/useAutoScroll";
 import type { ChatBubble } from "@/components/chat/types";
 
@@ -22,6 +23,7 @@ export default function Page() {
   const [gmail, setGmail] = useState<GmailConnection>({ connected: false, email: "", checking: true });
   const [settingsTab, setSettingsTab] = useState<"Main" | "Integrations">("Main");
   const [messages, setMessages] = useState<ChatBubble[]>([]);
+  const highlightReply = useBackgroundAlerts(messages, isLoadingHistory, settings);
   const [error, setError] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
   const { scrollContainerRef, handleScroll } = useAutoScroll({
@@ -58,6 +60,7 @@ export default function Page() {
 
   // Detect and store browser timezone on first load
   useEffect(() => {
+    let active = true;
     const detectAndStoreTimezone = async () => {
       // Only run if timezone not already stored
       if (settings.timezone) return;
@@ -72,7 +75,7 @@ export default function Page() {
           body: JSON.stringify({ timezone: browserTimezone }),
         });
 
-        if (response.ok) {
+        if (response.ok && active) {
           // Update local settings
           setSettings({ ...settings, timezone: browserTimezone });
         }
@@ -83,6 +86,9 @@ export default function Page() {
     };
 
     void detectAndStoreTimezone();
+    return () => {
+      active = false;
+    };
   }, [settings, setSettings]);
 
   useEffect(() => {
@@ -219,7 +225,10 @@ export default function Page() {
         className="chat-main"
         aria-label="Your assistant"
       >
-        <ChatHeader isWaitingForResponse={isWaitingForResponse} />
+        <ChatHeader
+          isWaitingForResponse={isWaitingForResponse}
+          highlightReply={highlightReply}
+        />
         <ChatMessages
           messages={messages}
           isLoadingHistory={isLoadingHistory}

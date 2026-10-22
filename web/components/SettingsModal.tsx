@@ -102,6 +102,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [isClearingData, setIsClearingData] = useState(false);
+  const [confirmClearData, setConfirmClearData] = useState(false);
   const [clearDataError, setClearDataError] = useState("");
   const [dataCleared, setDataCleared] = useState(false);
   const loadModel = useCallback((value: string) => {
@@ -117,12 +118,12 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
       setSaveError("");
       setClearDataError("");
       setDataCleared(false);
+      setConfirmClearData(false);
     }
   }, [open, initialTab]);
 
   const handleClearData = async () => {
-    if (isClearingData || isChatBusy) return;
-    if (!window.confirm("Clear all conversation data? This permanently deletes your messages, agent history, reminders, and scheduled automations. This cannot be undone.")) return;
+    if (!confirmClearData || isClearingData || isChatBusy || saving) return;
     setIsClearingData(true);
     setClearDataError("");
     setDataCleared(false);
@@ -131,6 +132,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
       if (!response.ok) throw new Error("Unable to clear data. Please try again.");
       onDataCleared?.();
       setDataCleared(true);
+      setConfirmClearData(false);
     } catch (error) {
       setClearDataError(error instanceof Error ? error.message : "Unable to clear data. Please try again.");
     } finally {
@@ -411,284 +413,351 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
   const disconnectButtonLabel = isDisconnecting ? "Disconnecting…" : "Disconnect";
 
   return (
-    <AnimatedDialog
-      open={open}
-      onClose={onClose}
-      dismissible={!saving && !isClearingData}
-      labelledBy="settings-title"
-      panelClassName={`${styles.window} !max-w-3xl !overflow-hidden`}
-    >
-      <div className="mb-4 flex shrink-0 items-center justify-between">
-        <h2
-          id="settings-title"
-          className="text-lg font-semibold"
-        >
-          Settings
-        </h2>
-        <button
-          onClick={onClose}
-          disabled={saving || isClearingData}
-          className="rounded-md p-2 hover:bg-gray-100"
-          aria-label="Close settings"
-        >
-          ✕
-        </button>
-      </div>
-      <div className={styles.content}>
-        <div
-          role="tablist"
-          aria-label="Settings sections"
-          aria-orientation="vertical"
-          className={styles.tabs}
-        >
-          {settingsTabs.map((tab, index) => (
-            <button
-              key={tab}
-              id={`settings-tab-${tab.toLowerCase()}`}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab}
-              aria-controls={`settings-panel-${tab.toLowerCase()}`}
-              tabIndex={activeTab === tab ? 0 : -1}
-              className={`rounded-lg px-2 py-2 text-left text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 sm:px-3 sm:text-sm ${activeTab === tab ? "bg-gray-100 text-gray-900" : "text-gray-500 hover:bg-gray-50 hover:text-gray-900"}`}
-              onClick={() => setActiveTab(tab)}
-              onKeyDown={(event) => {
-                let nextIndex = index;
-                if (event.key === "ArrowDown") nextIndex = (index + 1) % settingsTabs.length;
-                else if (event.key === "ArrowUp") nextIndex = (index + settingsTabs.length - 1) % settingsTabs.length;
-                else if (event.key === "Home") nextIndex = 0;
-                else if (event.key === "End") nextIndex = settingsTabs.length - 1;
-                else return;
-                event.preventDefault();
-                setActiveTab(settingsTabs[nextIndex]);
-                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[nextIndex]?.focus();
-              }}
-            >
-              {tab}
-            </button>
-          ))}
+    <>
+      <AnimatedDialog
+        open={open}
+        onClose={onClose}
+        dismissible={!saving && !isClearingData}
+        labelledBy="settings-title"
+        panelClassName={`${styles.window} !max-w-3xl !overflow-hidden`}
+      >
+        <div className="mb-4 flex shrink-0 items-center justify-between">
+          <h2
+            id="settings-title"
+            className="text-lg font-semibold"
+          >
+            Settings
+          </h2>
+          <button
+            onClick={onClose}
+            disabled={saving || isClearingData}
+            className="rounded-md p-2 hover:bg-gray-100"
+            aria-label="Close settings"
+          >
+            ✕
+          </button>
         </div>
-        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className={styles.content}>
           <div
-            id="settings-panel-main"
-            className={styles.tabPanel}
-            role="tabpanel"
-            aria-labelledby="settings-tab-main"
-            hidden={activeTab !== "Main"}
-            tabIndex={0}
+            role="tablist"
+            aria-label="Settings sections"
+            aria-orientation="vertical"
+            className={styles.tabs}
           >
-            <div>
-              <label
-                htmlFor="settings-timezone"
-                className="mb-1 block text-sm font-medium text-gray-700"
-              >
-                Timezone
-              </label>
-              <input
-                id="settings-timezone"
-                className="input"
-                type="text"
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-                placeholder="e.g. America/New_York, Europe/London"
-                readOnly={!timezone}
-              />
-              <p className="mt-1 text-xs text-gray-500">{timezone ? "Auto-detected from browser. Edit to override." : "Will be auto-detected on next page load."}</p>
-            </div>
-            <fieldset className="mt-6">
-              <legend className="text-sm font-semibold text-gray-900">Background alerts</legend>
-              <p className="mt-1 text-xs text-gray-500">Get alerted when a new reply arrives while you’re in another tab or app.</p>
-              {(
-                [
-                  ["chime", "Play a chime"],
-                  ["titleAlert", "Change tab title to “New message!”"],
-                ] as const
-              ).map(([key, label]) => (
-                <label
-                  key={key}
-                  className={styles.alertOption}
-                >
-                  <span>{label}</span>
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    className={styles.alertSwitch}
-                    checked={alerts[key]}
-                    onChange={(event) => setAlerts((previous) => ({ ...previous, [key]: event.target.checked }))}
-                  />
-                </label>
-              ))}
-            </fieldset>
-            <div className="mt-8 rounded-xl border border-red-200 bg-red-50/40 p-4">
-              <h3 className="text-sm font-semibold text-gray-900">Clear Data</h3>
-              <p className="mt-2 text-sm text-gray-600">Permanently delete your conversation, agent history, reminders, and scheduled automations. This cannot be undone.</p>
+            {settingsTabs.map((tab, index) => (
               <button
+                key={tab}
+                id={`settings-tab-${tab.toLowerCase()}`}
                 type="button"
-                className="mt-4 inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={handleClearData}
-                disabled={saving || isClearingData || isChatBusy}
-                aria-busy={isClearingData}
+                role="tab"
+                aria-selected={activeTab === tab}
+                aria-controls={`settings-panel-${tab.toLowerCase()}`}
+                tabIndex={activeTab === tab ? 0 : -1}
+                className={`rounded-lg px-2 py-2 text-left text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 sm:px-3 sm:text-sm ${activeTab === tab ? "bg-gray-100 text-gray-900" : "text-gray-500 hover:bg-gray-50 hover:text-gray-900"}`}
+                onClick={() => setActiveTab(tab)}
+                onKeyDown={(event) => {
+                  let nextIndex = index;
+                  if (event.key === "ArrowDown") nextIndex = (index + 1) % settingsTabs.length;
+                  else if (event.key === "ArrowUp") nextIndex = (index + settingsTabs.length - 1) % settingsTabs.length;
+                  else if (event.key === "Home") nextIndex = 0;
+                  else if (event.key === "End") nextIndex = settingsTabs.length - 1;
+                  else return;
+                  event.preventDefault();
+                  setActiveTab(settingsTabs[nextIndex]);
+                  event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[nextIndex]?.focus();
+                }}
               >
-                {isClearingData && <Spinner />}
-                {isClearingData ? "Clearing…" : "Clear Data"}
+                {tab}
               </button>
-              {isChatBusy && <p className="mt-2 text-xs text-gray-500">You can clear data once the conversation finishes loading or your assistant finishes responding.</p>}
-              {clearDataError && (
-                <p
-                  role="alert"
-                  className="mt-3 text-sm text-red-700"
-                >
-                  {clearDataError}
-                </p>
-              )}
-              {dataCleared && (
-                <p
-                  role="status"
-                  className="mt-3 text-sm text-brand-700"
-                >
-                  Your conversation data has been cleared.
-                </p>
-              )}
-            </div>
+            ))}
           </div>
-          <div
-            id="settings-panel-model"
-            className={styles.tabPanel}
-            role="tabpanel"
-            aria-labelledby="settings-tab-model"
-            hidden={activeTab !== "Model"}
-            tabIndex={0}
-          >
-            <ModelSelector
-              value={model}
-              onChange={setModel}
-              onLoad={loadModel}
-              disabled={saving || isClearingData}
-            />
-          </div>
-          <div
-            id="settings-panel-integrations"
-            className={styles.tabPanel}
-            role="tabpanel"
-            aria-labelledby="settings-tab-integrations"
-            hidden={activeTab !== "Integrations"}
-            tabIndex={0}
-          >
-            <h3 className="mb-3 text-sm font-semibold text-gray-900">Integrations</h3>
-            <div className="rounded-xl border border-gray-200 bg-white/70 p-4 shadow-sm">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-gray-900">Gmail (via Composio)</div>
-                  <p className="mt-1 text-sm text-gray-600">Connect Gmail to unlock email search, drafting, and automations inside OpenPoke.</p>
-                </div>
-                <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${isRefreshingGmail ? "bg-gray-50 text-gray-600 ring-gray-200" : gmailConnected ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-700 ring-amber-200"}`}>
-                  {isRefreshingGmail && <Spinner />}
-                  {isRefreshingGmail ? "Checking Gmail…" : gmailConnected ? "Connected" : "Not connected"}
-                </span>
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+            <div
+              id="settings-panel-main"
+              className={styles.tabPanel}
+              role="tabpanel"
+              aria-labelledby="settings-tab-main"
+              hidden={activeTab !== "Main"}
+              tabIndex={0}
+            >
+              <div>
+                <label
+                  htmlFor="settings-timezone"
+                  className="mb-1 block text-sm font-medium text-gray-700"
+                >
+                  Timezone
+                </label>
+                <input
+                  id="settings-timezone"
+                  className="input"
+                  type="text"
+                  value={timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                  placeholder="e.g. America/New_York, Europe/London"
+                  readOnly={!timezone}
+                />
+                <p className="mt-1 text-xs text-gray-500">{timezone ? "Auto-detected from browser. Edit to override." : "Will be auto-detected on next page load."}</p>
               </div>
-
-              {gmailConnected ? (
-                <div className="mt-4 space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Connected account</div>
-                    <div className="mt-1 text-sm font-medium text-gray-900">{gmailEmail || "Email unavailable"}</div>
-                  </div>
-                  {gmailProfileDetails.length > 0 && (
-                    <dl className="grid grid-cols-1 gap-2 text-xs text-gray-600 sm:grid-cols-3">
-                      {gmailProfileDetails.map((item) => (
-                        <div
-                          key={item.label}
-                          className="rounded-md border border-gray-200 bg-white/80 p-2"
-                        >
-                          <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</dt>
-                          <dd className="mt-1 text-sm font-medium text-gray-900">{item.value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  )}
-                  {gmailStatusMessage && (
-                    <p
-                      className="text-xs text-gray-500"
-                      aria-live="polite"
-                    >
-                      {gmailStatusMessage}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div
-                  className="mt-4 rounded-lg border border-dashed border-gray-200 p-3 text-sm text-gray-500"
-                  aria-live="polite"
-                >
-                  {isRefreshingGmail ? "Loading Gmail account details…" : gmailStatusMessage || "Complete the connection to view your Gmail account details here."}
-                </div>
-              )}
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className="btn gap-2"
-                  onClick={handleConnectGmail}
-                  disabled={connectingGmail || isRefreshingGmail || isDisconnecting}
-                  aria-busy={connectingGmail}
-                >
-                  {connectingGmail && <Spinner className="rounded-full bg-white p-0.5" />}
-                  {connectButtonLabel}
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
-                  onClick={refreshGmailStatus}
-                  disabled={isRefreshingGmail || connectingGmail || isDisconnecting}
-                  aria-busy={isRefreshingGmail}
-                >
-                  {isRefreshingGmail && <Spinner />}
-                  {refreshButtonLabel}
-                </button>
-                {gmailConnected && (
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-2 rounded-md border border-transparent bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
-                    onClick={handleDisconnectGmail}
-                    disabled={isDisconnecting || connectingGmail || isRefreshingGmail}
-                    aria-busy={isDisconnecting}
+              <fieldset className="mt-6">
+                <legend className="text-sm font-semibold text-gray-900">Background alerts</legend>
+                <p className="mt-1 text-xs text-gray-500">Get alerted when a new reply arrives while you’re in another tab or app.</p>
+                {(
+                  [
+                    ["chime", "Play a chime"],
+                    ["titleAlert", "Change tab title to “New message!”"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label
+                    key={key}
+                    className={styles.alertOption}
                   >
-                    {isDisconnecting && <Spinner />}
-                    {disconnectButtonLabel}
-                  </button>
+                    <span>{label}</span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      className={styles.alertSwitch}
+                      checked={alerts[key]}
+                      onChange={(event) => setAlerts((previous) => ({ ...previous, [key]: event.target.checked }))}
+                    />
+                  </label>
+                ))}
+              </fieldset>
+              <div className="mt-8 rounded-xl border border-red-200 bg-red-50/40 p-4">
+                <h3 className="text-sm font-semibold text-gray-900">Clear Data</h3>
+                <p className="mt-2 text-sm text-gray-600">Permanently delete your conversation, agent history, reminders, and scheduled automations. This cannot be undone.</p>
+                <button
+                  type="button"
+                  className="mt-4 inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => {
+                    setClearDataError("");
+                    setConfirmClearData(true);
+                  }}
+                  disabled={saving || isClearingData || isChatBusy}
+                  aria-busy={isClearingData}
+                >
+                  {isClearingData && <Spinner />}
+                  {isClearingData ? "Clearing…" : "Clear Data"}
+                </button>
+                {isChatBusy && <p className="mt-2 text-xs text-gray-500">You can clear data once the conversation finishes loading or your assistant finishes responding.</p>}
+                {dataCleared && (
+                  <p
+                    role="status"
+                    className="mt-3 text-sm text-brand-700"
+                  >
+                    Your conversation data has been cleared.
+                  </p>
                 )}
               </div>
             </div>
+            <div
+              id="settings-panel-model"
+              className={styles.tabPanel}
+              role="tabpanel"
+              aria-labelledby="settings-tab-model"
+              hidden={activeTab !== "Model"}
+              tabIndex={0}
+            >
+              <ModelSelector
+                value={model}
+                onChange={setModel}
+                onLoad={loadModel}
+                disabled={saving || isClearingData}
+              />
+            </div>
+            <div
+              id="settings-panel-integrations"
+              className={styles.tabPanel}
+              role="tabpanel"
+              aria-labelledby="settings-tab-integrations"
+              hidden={activeTab !== "Integrations"}
+              tabIndex={0}
+            >
+              <h3 className="mb-3 text-sm font-semibold text-gray-900">Integrations</h3>
+              <div className="rounded-xl border border-gray-200 bg-white/70 p-4 shadow-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">Gmail (via Composio)</div>
+                    <p className="mt-1 text-sm text-gray-600">Connect Gmail to unlock email search, drafting, and automations inside OpenPoke.</p>
+                  </div>
+                  <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${isRefreshingGmail ? "bg-gray-50 text-gray-600 ring-gray-200" : gmailConnected ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-700 ring-amber-200"}`}>
+                    {isRefreshingGmail && <Spinner />}
+                    {isRefreshingGmail ? "Checking Gmail…" : gmailConnected ? "Connected" : "Not connected"}
+                  </span>
+                </div>
+
+                {gmailConnected ? (
+                  <div className="mt-4 space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wide text-gray-500">Connected account</div>
+                      <div className="mt-1 text-sm font-medium text-gray-900">{gmailEmail || "Email unavailable"}</div>
+                    </div>
+                    {gmailProfileDetails.length > 0 && (
+                      <dl className="grid grid-cols-1 gap-2 text-xs text-gray-600 sm:grid-cols-3">
+                        {gmailProfileDetails.map((item) => (
+                          <div
+                            key={item.label}
+                            className="rounded-md border border-gray-200 bg-white/80 p-2"
+                          >
+                            <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</dt>
+                            <dd className="mt-1 text-sm font-medium text-gray-900">{item.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                    {gmailStatusMessage && (
+                      <p
+                        className="text-xs text-gray-500"
+                        aria-live="polite"
+                      >
+                        {gmailStatusMessage}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div
+                    className="mt-4 rounded-lg border border-dashed border-gray-200 p-3 text-sm text-gray-500"
+                    aria-live="polite"
+                  >
+                    {isRefreshingGmail ? "Loading Gmail account details…" : gmailStatusMessage || "Complete the connection to view your Gmail account details here."}
+                  </div>
+                )}
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="btn gap-2"
+                    onClick={handleConnectGmail}
+                    disabled={connectingGmail || isRefreshingGmail || isDisconnecting}
+                    aria-busy={connectingGmail}
+                  >
+                    {connectingGmail && <Spinner className="rounded-full bg-white p-0.5" />}
+                    {connectButtonLabel}
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={refreshGmailStatus}
+                    disabled={isRefreshingGmail || connectingGmail || isDisconnecting}
+                    aria-busy={isRefreshingGmail}
+                  >
+                    {isRefreshingGmail && <Spinner />}
+                    {refreshButtonLabel}
+                  </button>
+                  {gmailConnected && (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 rounded-md border border-transparent bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={handleDisconnectGmail}
+                      disabled={isDisconnecting || connectingGmail || isRefreshingGmail}
+                      aria-busy={isDisconnecting}
+                    >
+                      {isDisconnecting && <Spinner />}
+                      {disconnectButtonLabel}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
 
-      {saveError && (
-        <p
-          role="alert"
-          className="mt-4 shrink-0 text-sm text-red-600"
+        {saveError && (
+          <p
+            role="alert"
+            className="mt-4 shrink-0 text-sm text-red-600"
+          >
+            {saveError}
+          </p>
+        )}
+        <div className="mt-6 flex shrink-0 justify-end gap-2 border-t border-gray-200 pt-4">
+          <button
+            onClick={onClose}
+            disabled={saving || isClearingData}
+            className="rounded-md px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+          >
+            Cancel
+          </button>
+          <button
+            className="btn gap-2"
+            onClick={saveSettings}
+            disabled={saving || isClearingData}
+            aria-busy={saving}
+          >
+            {saving && <Spinner className="rounded-full bg-white p-0.5" />}
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </AnimatedDialog>
+      <AnimatedDialog
+        open={open && confirmClearData}
+        onClose={() => setConfirmClearData(false)}
+        dismissible={!isClearingData}
+        labelledBy="clear-data-title"
+        panelClassName="!max-w-md"
+      >
+        <div
+          className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-50 text-red-600"
+          aria-hidden="true"
         >
-          {saveError}
-        </p>
-      )}
-      <div className="mt-6 flex shrink-0 justify-end gap-2 border-t border-gray-200 pt-4">
-        <button
-          onClick={onClose}
-          disabled={saving || isClearingData}
-          className="rounded-md px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" />
+          </svg>
+        </div>
+        <h2
+          id="clear-data-title"
+          className="text-lg font-semibold text-gray-900"
         >
-          Cancel
-        </button>
-        <button
-          className="btn gap-2"
-          onClick={saveSettings}
-          disabled={saving || isClearingData}
-          aria-busy={saving}
-        >
-          {saving && <Spinner className="rounded-full bg-white p-0.5" />}
-          {saving ? "Saving…" : "Save"}
-        </button>
-      </div>
-    </AnimatedDialog>
+          Clear all conversation data?
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-gray-600">This will permanently delete your messages, agent history, reminders, and scheduled automations.</p>
+        <p className="mt-2 text-sm font-medium text-red-700">This cannot be undone.</p>
+        {clearDataError && (
+          <p
+            role="alert"
+            className="mt-4 text-sm text-red-700"
+          >
+            {clearDataError}
+          </p>
+        )}
+        {isChatBusy && (
+          <p
+            role="status"
+            className="mt-4 text-sm text-gray-600"
+          >
+            Wait for your assistant to finish before clearing data.
+          </p>
+        )}
+        <div className="mt-6 flex flex-wrap justify-end gap-2 border-t border-gray-200 pt-4">
+          <button
+            type="button"
+            autoFocus
+            onClick={() => setConfirmClearData(false)}
+            disabled={isClearingData}
+            className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleClearData}
+            disabled={isClearingData || isChatBusy || saving}
+            aria-busy={isClearingData}
+            className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isClearingData && <Spinner />}
+            {isClearingData ? "Clearing…" : "Clear all data"}
+          </button>
+        </div>
+      </AnimatedDialog>
+    </>
   );
 }

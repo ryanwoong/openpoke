@@ -201,6 +201,12 @@ export default function Page() {
   );
 
   const clearError = useCallback(() => setError(null), [setError]);
+  const handleDataCleared = useCallback(() => {
+    setMessages([]);
+    setInput("");
+    setError(null);
+    setIsWaitingForResponse(false);
+  }, []);
 
   return (
     <main className="chat-workspace">
@@ -247,6 +253,8 @@ export default function Page() {
         onSave={setSettings}
         initialTab={settingsTab}
         onGmailStatusChange={setGmail}
+        onDataCleared={handleDataCleared}
+        isChatBusy={isLoadingHistory || isWaitingForResponse}
       />
     </main>
   );

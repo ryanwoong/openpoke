@@ -89,13 +89,16 @@ function deriveEmailFromPayload(payload: any): string {
   return "";
 }
 
-export default function SettingsModal({ open, onClose, settings, onSave, initialTab = "Main", onGmailStatusChange }: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => void; initialTab?: (typeof settingsTabs)[number]; onGmailStatusChange?: (status: GmailConnection) => void }) {
+export default function SettingsModal({ open, onClose, settings, onSave, initialTab = "Main", onGmailStatusChange, onDataCleared, isChatBusy = false }: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => void; initialTab?: (typeof settingsTabs)[number]; onGmailStatusChange?: (status: GmailConnection) => void; onDataCleared?: () => void; isChatBusy?: boolean }) {
   const [activeTab, setActiveTab] = useState<(typeof settingsTabs)[number]>("Main");
   const [timezone, setTimezone] = useState(settings.timezone);
   const [model, setModel] = useState("");
   const [savedModel, setSavedModel] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [isClearingData, setIsClearingData] = useState(false);
+  const [clearDataError, setClearDataError] = useState("");
+  const [dataCleared, setDataCleared] = useState(false);
   const loadModel = useCallback((value: string) => {
     setModel(value);
     setSavedModel(value);
@@ -107,8 +110,28 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
       setModel("");
       setSavedModel("");
       setSaveError("");
+      setClearDataError("");
+      setDataCleared(false);
     }
   }, [open, initialTab]);
+
+  const handleClearData = async () => {
+    if (isClearingData || isChatBusy) return;
+    if (!window.confirm("Clear all conversation data? This permanently deletes your messages, agent history, reminders, and scheduled automations. This cannot be undone.")) return;
+    setIsClearingData(true);
+    setClearDataError("");
+    setDataCleared(false);
+    try {
+      const response = await fetch("/api/chat/history", { method: "DELETE" });
+      if (!response.ok) throw new Error("Unable to clear data. Please try again.");
+      onDataCleared?.();
+      setDataCleared(true);
+    } catch (error) {
+      setClearDataError(error instanceof Error ? error.message : "Unable to clear data. Please try again.");
+    } finally {
+      setIsClearingData(false);
+    }
+  };
 
   const saveSettings = async () => {
     setSaving(true);
@@ -385,7 +408,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
     <AnimatedDialog
       open={open}
       onClose={onClose}
-      dismissible={!saving}
+      dismissible={!saving && !isClearingData}
       labelledBy="settings-title"
       panelClassName={`${styles.window} !max-w-3xl !overflow-hidden`}
     >
@@ -398,7 +421,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
         </h2>
         <button
           onClick={onClose}
-          disabled={saving}
+          disabled={saving || isClearingData}
           className="rounded-md p-2 hover:bg-gray-100"
           aria-label="Close settings"
         >
@@ -466,6 +489,37 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
               />
               <p className="mt-1 text-xs text-gray-500">{timezone ? "Auto-detected from browser. Edit to override." : "Will be auto-detected on next page load."}</p>
             </div>
+            <div className="mt-8 rounded-xl border border-red-200 bg-red-50/40 p-4">
+              <h3 className="text-sm font-semibold text-gray-900">Clear Data</h3>
+              <p className="mt-2 text-sm text-gray-600">Permanently delete your conversation, agent history, reminders, and scheduled automations. This cannot be undone.</p>
+              <button
+                type="button"
+                className="mt-4 inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={handleClearData}
+                disabled={saving || isClearingData || isChatBusy}
+                aria-busy={isClearingData}
+              >
+                {isClearingData && <Spinner />}
+                {isClearingData ? "Clearing…" : "Clear Data"}
+              </button>
+              {isChatBusy && <p className="mt-2 text-xs text-gray-500">You can clear data once the conversation finishes loading or your assistant finishes responding.</p>}
+              {clearDataError && (
+                <p
+                  role="alert"
+                  className="mt-3 text-sm text-red-700"
+                >
+                  {clearDataError}
+                </p>
+              )}
+              {dataCleared && (
+                <p
+                  role="status"
+                  className="mt-3 text-sm text-brand-700"
+                >
+                  Your conversation data has been cleared.
+                </p>
+              )}
+            </div>
           </div>
           <div
             id="settings-panel-model"
@@ -479,7 +533,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
               value={model}
               onChange={setModel}
               onLoad={loadModel}
-              disabled={saving}
+              disabled={saving || isClearingData}
             />
           </div>
           <div
@@ -590,7 +644,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
       <div className="mt-6 flex shrink-0 justify-end gap-2 border-t border-gray-200 pt-4">
         <button
           onClick={onClose}
-          disabled={saving}
+          disabled={saving || isClearingData}
           className="rounded-md px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
         >
           Cancel
@@ -598,7 +652,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
         <button
           className="btn gap-2"
           onClick={saveSettings}
-          disabled={saving}
+          disabled={saving || isClearingData}
           aria-busy={saving}
         >
           {saving && <Spinner className="rounded-full bg-white p-0.5" />}

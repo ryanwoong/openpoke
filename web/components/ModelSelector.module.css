@@ -391,6 +391,28 @@
   }
 }
 
+.providerIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+  background: #fff;
+  color: #667085;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+}
+
+.providerIcon img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
 .options::-webkit-scrollbar {
   width: 16px;
 }

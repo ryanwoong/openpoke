@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { LoadingIndicator } from "./ui/LoadingIndicator";
@@ -19,6 +20,69 @@ function price(value: string | undefined, multiplier = 1) {
 
 function isFree(model: Model) {
   return Number(model.pricing.prompt) === 0 && Number(model.pricing.completion) === 0 && Number(model.pricing.request || 0) === 0;
+}
+
+const providerIcons: Record<string, string> = {
+  anthropic: "anthropic",
+  openai: "openai",
+  google: "google",
+  deepseek: "deepseek",
+  "meta-llama": "meta",
+  meta: "meta",
+  "bytedance-seed": "bytedance",
+  "aion-labs": "aionlabs",
+  "dots-studio": "dotsstudio",
+  fireworks: "fireworks",
+  perceptron: "perceptron",
+  poolside: "poolside",
+  rekaai: "reka",
+  relace: "relace",
+  sakana: "sakana",
+  tencent: "tencent",
+  upstage: "upstage",
+  mistralai: "mistral",
+  "x-ai": "xai",
+  qwen: "alibaba",
+  cohere: "cohere",
+  moonshotai: "moonshotai",
+  minimax: "minimax",
+  nvidia: "nvidia",
+  perplexity: "perplexity",
+  openrouter: "openrouter",
+  ai21: "ai21",
+  "arcee-ai": "arcee",
+  inception: "inception",
+  liquid: "liquid",
+  stepfun: "stepfun",
+  "z-ai": "zai",
+  xiaomi: "xiaomi",
+  amazon: "amazon-bedrock",
+  "ibm-granite": "watsonx",
+};
+
+function ProviderIcon({ modelId }: { modelId: string }) {
+  const provider = modelId.split("/")[0].replace(/^~+/, "");
+  const icon = providerIcons[provider];
+  const [failedIcon, setFailedIcon] = useState("");
+
+  return (
+    <span
+      className={styles.providerIcon}
+      aria-hidden="true"
+    >
+      {icon && failedIcon !== icon ? (
+        <Image
+          src={`/model-providers/${icon}.svg`}
+          alt=""
+          width={20}
+          height={20}
+          onError={() => setFailedIcon(icon)}
+        />
+      ) : (
+        <span>{provider.slice(0, 2).toUpperCase() || "AI"}</span>
+      )}
+    </span>
+  );
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -213,6 +277,7 @@ export default function ModelSelector({ value, onChange, onLoad, disabled }: { v
                 }
               }}
             >
+              <ProviderIcon modelId={value} />
               <span className={styles.modelIdentity}>
                 <span className={styles.eyebrow}>Selected model</span>
                 <span className={styles.modelName}>{selected?.name || value || "Choose a model"}</span>
@@ -312,6 +377,7 @@ export default function ModelSelector({ value, onChange, onLoad, disabled }: { v
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => selectModel(model)}
                     >
+                      <ProviderIcon modelId={model.id} />
                       <span className={styles.modelIdentity}>
                         <span
                           className={styles.optionName}

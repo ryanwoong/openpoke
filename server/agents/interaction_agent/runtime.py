@@ -208,7 +208,7 @@ class InteractionAgentRuntime:
 
         logger.debug(
             "Interaction agent calling LLM",
-            extra={"model": self.model, "tools": len(self.tool_schemas)},
+            extra={"tools": len(self.tool_schemas)},
         )
         return await request_chat_completion(
             model=self.model,

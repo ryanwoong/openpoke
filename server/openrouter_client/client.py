@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from ..config import get_settings
+from ..logging_config import logger
+from ..model_settings import model_store
 
 OpenRouterBaseURL = "https://openrouter.ai/api/v1"
 
@@ -58,7 +60,7 @@ async def request_chat_completion(
     """Request a chat completion and return the raw JSON payload."""
 
     payload: Dict[str, object] = {
-        "model": model,
+        "model": model_store.get() or model,
         "messages": _build_messages(messages, system),
         "stream": False,
     }
@@ -66,6 +68,7 @@ async def request_chat_completion(
         payload["tools"] = tools
 
     url = f"{base_url.rstrip('/')}/chat/completions"
+    logger.info("OpenRouter request: model=%s, tools=%d", payload["model"], len(tools or []))
 
     async with httpx.AsyncClient() as client:
         try:
@@ -79,7 +82,9 @@ async def request_chat_completion(
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 _handle_response_error(exc)
-            return response.json()
+            result = response.json()
+            logger.info("OpenRouter response: requested_model=%s, returned_model=%s", payload["model"], result.get("model", "unknown"))
+            return result
         except httpx.HTTPStatusError as exc:  # pragma: no cover - handled above
             _handle_response_error(exc)
         except httpx.HTTPError as exc:

@@ -1,16 +1,17 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from "react";
+import ModelSelector from "./ModelSelector";
 
 export type Settings = {
   timezone: string;
 };
 
 export function useSettings() {
-  const [settings, setSettings] = useState<Settings>({ timezone: '' });
+  const [settings, setSettings] = useState<Settings>({ timezone: "" });
 
   useEffect(() => {
     try {
-      const timezone = localStorage.getItem('user_timezone') || '';
+      const timezone = localStorage.getItem("user_timezone") || "";
       setSettings({ timezone });
     } catch {}
   }, []);
@@ -18,7 +19,7 @@ export function useSettings() {
   const persist = useCallback((s: Settings) => {
     setSettings(s);
     try {
-      localStorage.setItem('user_timezone', s.timezone);
+      localStorage.setItem("user_timezone", s.timezone);
     } catch {}
   }, []);
 
@@ -26,16 +27,12 @@ export function useSettings() {
 }
 
 function coerceEmailFrom(value: unknown): string | null {
-  if (typeof value === 'string' && value.includes('@')) {
+  if (typeof value === "string" && value.includes("@")) {
     return value;
   }
-  if (value && typeof value === 'object') {
-    const candidate =
-      (value as any).emailAddress ??
-      (value as any).email ??
-      (value as any).value ??
-      (value as any).address;
-    if (typeof candidate === 'string' && candidate.includes('@')) {
+  if (value && typeof value === "object") {
+    const candidate = (value as any).emailAddress ?? (value as any).email ?? (value as any).value ?? (value as any).address;
+    if (typeof candidate === "string" && candidate.includes("@")) {
       return candidate;
     }
   }
@@ -43,21 +40,21 @@ function coerceEmailFrom(value: unknown): string | null {
 }
 
 function deriveEmailFromPayload(payload: any): string {
-  if (!payload) return '';
+  if (!payload) return "";
   const profileSlice = payload?.profile;
   const candidateObjects: any[] = [];
 
-  if (profileSlice && typeof profileSlice === 'object') {
+  if (profileSlice && typeof profileSlice === "object") {
     candidateObjects.push(profileSlice);
-    if ((profileSlice as any).response_data && typeof (profileSlice as any).response_data === 'object') {
+    if ((profileSlice as any).response_data && typeof (profileSlice as any).response_data === "object") {
       candidateObjects.push((profileSlice as any).response_data);
     }
     if (Array.isArray((profileSlice as any).items)) {
       for (const entry of (profileSlice as any).items as any[]) {
-        if (entry && typeof entry === 'object') {
-          if (typeof entry.data === 'object') candidateObjects.push(entry.data);
-          if (typeof entry.response_data === 'object') candidateObjects.push(entry.response_data);
-          if (typeof entry.profile === 'object') candidateObjects.push(entry.profile);
+        if (entry && typeof entry === "object") {
+          if (typeof entry.data === "object") candidateObjects.push(entry.data);
+          if (typeof entry.response_data === "object") candidateObjects.push(entry.response_data);
+          if (typeof entry.profile === "object") candidateObjects.push(entry.profile);
         }
       }
     }
@@ -66,21 +63,8 @@ function deriveEmailFromPayload(payload: any): string {
   const directCandidates = [payload?.email];
 
   for (const obj of candidateObjects) {
-    if (!obj || typeof obj !== 'object') continue;
-    directCandidates.push(
-      obj?.email,
-      obj?.email_address,
-      obj?.emailAddress,
-      obj?.profile?.email,
-      obj?.profile?.emailAddress,
-      obj?.profile?.email_address,
-      obj?.user?.email,
-      obj?.user?.emailAddress,
-      obj?.user?.email_address,
-      obj?.data?.email,
-      obj?.data?.emailAddress,
-      obj?.data?.email_address,
-    );
+    if (!obj || typeof obj !== "object") continue;
+    directCandidates.push(obj?.email, obj?.email_address, obj?.emailAddress, obj?.profile?.email, obj?.profile?.emailAddress, obj?.profile?.email_address, obj?.user?.email, obj?.user?.emailAddress, obj?.user?.email_address, obj?.data?.email, obj?.data?.emailAddress, obj?.data?.email_address);
     const emailAddresses = (obj as any).emailAddresses;
     if (Array.isArray(emailAddresses)) {
       for (const entry of emailAddresses) {
@@ -95,53 +79,78 @@ function deriveEmailFromPayload(payload: any): string {
     if (email) return email;
   }
 
-  return '';
+  return "";
 }
 
-export default function SettingsModal({
-  open,
-  onClose,
-  settings,
-  onSave,
-}: {
-  open: boolean;
-  onClose: () => void;
-  settings: Settings;
-  onSave: (s: Settings) => void;
-}) {
+export default function SettingsModal({ open, onClose, settings, onSave }: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => void }) {
   const [timezone, setTimezone] = useState(settings.timezone);
+  const [model, setModel] = useState("");
+  const [savedModel, setSavedModel] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const loadModel = useCallback((value: string) => {
+    setModel(value);
+    setSavedModel(value);
+  }, []);
+
+  useEffect(() => {
+    if (open) {
+      setModel("");
+      setSavedModel("");
+      setSaveError("");
+    }
+  }, [open]);
+
+  const saveSettings = async () => {
+    setSaving(true);
+    setSaveError("");
+    try {
+      if (model && model !== savedModel) {
+        const response = await fetch("/api/settings/model", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || data.detail || "Unable to save model");
+      }
+      onSave({ timezone });
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Unable to save settings");
+    } finally {
+      setSaving(false);
+    }
+  };
   const [connectingGmail, setConnectingGmail] = useState(false);
   const [isRefreshingGmail, setIsRefreshingGmail] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
-  const [gmailStatusMessage, setGmailStatusMessage] = useState('');
+  const [gmailStatusMessage, setGmailStatusMessage] = useState("");
   const [gmailConnected, setGmailConnected] = useState(false);
-  const [gmailEmail, setGmailEmail] = useState('');
-  const [gmailConnId, setGmailConnId] = useState('');
+  const [gmailEmail, setGmailEmail] = useState("");
+  const [gmailConnId, setGmailConnId] = useState("");
   const [gmailProfile, setGmailProfile] = useState<Record<string, unknown> | null>(null);
 
   const readStoredUserId = useCallback(() => {
-    if (typeof window === 'undefined') return '';
+    if (typeof window === "undefined") return "";
     try {
-      return localStorage.getItem('openpoke_user_id') || '';
+      return localStorage.getItem("openpoke_user_id") || "";
     } catch {
-      return '';
+      return "";
     }
   }, []);
 
   const ensureUserId = useCallback(() => {
-    if (typeof window === 'undefined') {
+    if (typeof window === "undefined") {
       return `web-${Math.random().toString(36).slice(2)}`;
     }
     try {
-      const existing = localStorage.getItem('openpoke_user_id');
+      const existing = localStorage.getItem("openpoke_user_id");
       if (existing) return existing;
       const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
-      const randomPart =
-        cryptoObj && typeof cryptoObj.randomUUID === 'function'
-          ? cryptoObj.randomUUID().replace(/-/g, '')
-          : Math.random().toString(36).slice(2);
+      const randomPart = cryptoObj && typeof cryptoObj.randomUUID === "function" ? cryptoObj.randomUUID().replace(/-/g, "") : Math.random().toString(36).slice(2);
       const generated = `web-${randomPart}`;
-      localStorage.setItem('openpoke_user_id', generated);
+      localStorage.setItem("openpoke_user_id", generated);
       return generated;
     } catch {
       return `web-${Math.random().toString(36).slice(2)}`;
@@ -150,19 +159,19 @@ export default function SettingsModal({
 
   const readStoredConnectionRequestId = useCallback(() => {
     if (gmailConnId) return gmailConnId;
-    if (typeof window === 'undefined') return '';
+    if (typeof window === "undefined") return "";
     try {
-      return localStorage.getItem('gmail_connection_request_id') || '';
+      return localStorage.getItem("gmail_connection_request_id") || "";
     } catch {
-      return '';
+      return "";
     }
   }, [gmailConnId]);
 
   useEffect(() => {
     try {
-      const savedConnected = localStorage.getItem('gmail_connected') === 'true';
-      const savedConnId = localStorage.getItem('gmail_connection_request_id') || '';
-      const savedEmail = localStorage.getItem('gmail_email') || '';
+      const savedConnected = localStorage.getItem("gmail_connected") === "true";
+      const savedConnId = localStorage.getItem("gmail_connection_request_id") || "";
+      const savedEmail = localStorage.getItem("gmail_email") || "";
       setGmailConnected(savedConnected);
       setGmailConnId(savedConnId);
       setGmailEmail(savedEmail);
@@ -176,16 +185,16 @@ export default function SettingsModal({
     if (!gmailProfile) return [] as { label: string; value: string }[];
     const details: { label: string; value: string }[] = [];
     const messagesTotal = (gmailProfile as any)?.messagesTotal;
-    if (typeof messagesTotal === 'number') {
-      details.push({ label: 'Messages', value: messagesTotal.toLocaleString() });
+    if (typeof messagesTotal === "number") {
+      details.push({ label: "Messages", value: messagesTotal.toLocaleString() });
     }
     const threadsTotal = (gmailProfile as any)?.threadsTotal;
-    if (typeof threadsTotal === 'number') {
-      details.push({ label: 'Threads', value: threadsTotal.toLocaleString() });
+    if (typeof threadsTotal === "number") {
+      details.push({ label: "Threads", value: threadsTotal.toLocaleString() });
     }
     const historyId = (gmailProfile as any)?.historyId ?? (gmailProfile as any)?.historyID;
-    if (historyId !== undefined && historyId !== null && historyId !== '') {
-      details.push({ label: 'History ID', value: String(historyId) });
+    if (historyId !== undefined && historyId !== null && historyId !== "") {
+      details.push({ label: "History ID", value: String(historyId) });
     }
     return details;
   }, [gmailProfile]);
@@ -193,11 +202,11 @@ export default function SettingsModal({
   const handleConnectGmail = useCallback(async () => {
     try {
       setConnectingGmail(true);
-      setGmailStatusMessage('');
+      setGmailStatusMessage("");
       const userId = ensureUserId();
-      const resp = await fetch('/api/gmail/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const resp = await fetch("/api/gmail/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -207,24 +216,24 @@ export default function SettingsModal({
         return;
       }
       const url = data?.redirect_url;
-      const connId = data?.connection_request_id || '';
+      const connId = data?.connection_request_id || "";
       if (connId) {
         setGmailConnId(connId);
         try {
-          localStorage.setItem('gmail_connection_request_id', connId);
+          localStorage.setItem("gmail_connection_request_id", connId);
         } catch {}
       }
       setGmailConnected(false);
-      setGmailEmail('');
+      setGmailEmail("");
       setGmailProfile(null);
       if (url) {
-        window.open(url, '_blank', 'noopener');
-        setGmailStatusMessage('Gmail authorization opened in a new tab. Complete it, then press “Refresh status”.');
+        window.open(url, "_blank", "noopener");
+        setGmailStatusMessage("Gmail authorization opened in a new tab. Complete it, then press “Refresh status”.");
       } else {
-        setGmailStatusMessage('Connection initiated. Refresh status once authorization completes.');
+        setGmailStatusMessage("Connection initiated. Refresh status once authorization completes.");
       }
     } catch (e: any) {
-      setGmailStatusMessage(e?.message || 'Failed to connect Gmail');
+      setGmailStatusMessage(e?.message || "Failed to connect Gmail");
     } finally {
       setConnectingGmail(false);
     }
@@ -236,17 +245,17 @@ export default function SettingsModal({
     if (!userId && !connectionRequestId) {
       setGmailConnected(false);
       setGmailProfile(null);
-      setGmailEmail('');
-      setGmailStatusMessage('Connect Gmail to get started.');
+      setGmailEmail("");
+      setGmailStatusMessage("Connect Gmail to get started.");
       return;
     }
 
     try {
       setIsRefreshingGmail(true);
-      setGmailStatusMessage('Refreshing Gmail status…');
-      const resp = await fetch('/api/gmail/status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      setGmailStatusMessage("Refreshing Gmail status…");
+      const resp = await fetch("/api/gmail/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId, connectionRequestId }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -255,7 +264,7 @@ export default function SettingsModal({
         const message = data?.error || `Failed (${resp.status})`;
         setGmailConnected(false);
         setGmailProfile(null);
-        setGmailEmail('');
+        setGmailEmail("");
         setGmailStatusMessage(message);
         return;
       }
@@ -264,62 +273,60 @@ export default function SettingsModal({
         setGmailConnId(connectionRequestId);
       }
 
-      const profileData = data?.profile && typeof data.profile === 'object' ? (data.profile as Record<string, unknown>) : null;
+      const profileData = data?.profile && typeof data.profile === "object" ? (data.profile as Record<string, unknown>) : null;
       setGmailProfile(profileData);
 
       const derivedEmail = deriveEmailFromPayload({ email: data?.email, profile: profileData });
-      const email = derivedEmail || (typeof data?.email === 'string' ? data.email : '');
+      const email = derivedEmail || (typeof data?.email === "string" ? data.email : "");
       const connected = Boolean(data?.connected);
 
       setGmailConnected(connected);
       setGmailEmail(email);
 
       if (connected) {
-        const source = typeof data?.profile_source === 'string' ? data.profile_source : '';
-        const sourceNote = source === 'fetched' ? 'Verified moments ago.' : source === 'cache' ? 'Loaded from cache.' : '';
-        const message = email ? `Connected as ${email}` : 'Gmail connected.';
+        const source = typeof data?.profile_source === "string" ? data.profile_source : "";
+        const sourceNote = source === "fetched" ? "Verified moments ago." : source === "cache" ? "Loaded from cache." : "";
+        const message = email ? `Connected as ${email}` : "Gmail connected.";
         setGmailStatusMessage(sourceNote ? `${message} ${sourceNote}` : message);
         try {
-          localStorage.setItem('gmail_connected', 'true');
-          if (email) localStorage.setItem('gmail_email', email);
-          if (typeof data?.user_id === 'string' && data.user_id) {
-            localStorage.setItem('openpoke_user_id', data.user_id);
+          localStorage.setItem("gmail_connected", "true");
+          if (email) localStorage.setItem("gmail_email", email);
+          if (typeof data?.user_id === "string" && data.user_id) {
+            localStorage.setItem("openpoke_user_id", data.user_id);
           }
         } catch {}
       } else {
-        const statusText = typeof data?.status === 'string' && data.status && data.status !== 'UNKNOWN'
-          ? `Status: ${data.status}`
-          : 'Not connected yet.';
+        const statusText = typeof data?.status === "string" && data.status && data.status !== "UNKNOWN" ? `Status: ${data.status}` : "Not connected yet.";
         setGmailStatusMessage(statusText);
         try {
-          localStorage.removeItem('gmail_connected');
-          localStorage.removeItem('gmail_email');
+          localStorage.removeItem("gmail_connected");
+          localStorage.removeItem("gmail_email");
         } catch {}
       }
     } catch (e: any) {
       setGmailConnected(false);
       setGmailProfile(null);
-      setGmailEmail('');
-      setGmailStatusMessage(e?.message || 'Failed to check Gmail status');
+      setGmailEmail("");
+      setGmailStatusMessage(e?.message || "Failed to check Gmail status");
     } finally {
       setIsRefreshingGmail(false);
     }
   }, [gmailConnId, readStoredConnectionRequestId, readStoredUserId]);
 
   const handleDisconnectGmail = useCallback(async () => {
-    if (typeof window !== 'undefined') {
-      const proceed = window.confirm('Disconnect Gmail from OpenPoke?');
+    if (typeof window !== "undefined") {
+      const proceed = window.confirm("Disconnect Gmail from OpenPoke?");
       if (!proceed) return;
     }
 
     try {
       setIsDisconnecting(true);
-      setGmailStatusMessage('Disconnecting Gmail…');
+      setGmailStatusMessage("Disconnecting Gmail…");
       const userId = readStoredUserId();
       const connectionRequestId = readStoredConnectionRequestId();
-      const resp = await fetch('/api/gmail/disconnect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const resp = await fetch("/api/gmail/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId, connectionRequestId }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -331,18 +338,18 @@ export default function SettingsModal({
       }
 
       setGmailConnected(false);
-      setGmailEmail('');
+      setGmailEmail("");
       setGmailProfile(null);
-      setGmailConnId('');
-      setGmailStatusMessage('Gmail disconnected.');
+      setGmailConnId("");
+      setGmailStatusMessage("Gmail disconnected.");
       try {
-        localStorage.removeItem('gmail_connected');
-        localStorage.removeItem('gmail_email');
-        localStorage.removeItem('gmail_connection_request_id');
-        localStorage.removeItem('openpoke_user_id');
+        localStorage.removeItem("gmail_connected");
+        localStorage.removeItem("gmail_email");
+        localStorage.removeItem("gmail_connection_request_id");
+        localStorage.removeItem("openpoke_user_id");
       } catch {}
     } catch (e: any) {
-      setGmailStatusMessage(e?.message || 'Failed to disconnect Gmail');
+      setGmailStatusMessage(e?.message || "Failed to disconnect Gmail");
     } finally {
       setIsDisconnecting(false);
     }
@@ -359,20 +366,31 @@ export default function SettingsModal({
 
   if (!open) return null;
 
-  const connectButtonLabel = connectingGmail ? 'Opening…' : gmailConnected ? 'Reconnect' : 'Connect Gmail';
-  const refreshButtonLabel = isRefreshingGmail ? 'Refreshing…' : 'Refresh status';
-  const disconnectButtonLabel = isDisconnecting ? 'Disconnecting…' : 'Disconnect';
+  const connectButtonLabel = connectingGmail ? "Opening…" : gmailConnected ? "Reconnect" : "Connect Gmail";
+  const refreshButtonLabel = isRefreshingGmail ? "Refreshing…" : "Refresh status";
+  const disconnectButtonLabel = isDisconnecting ? "Disconnecting…" : "Disconnect";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-      <div className="card w-full max-w-lg p-6">
+      <div className="card max-h-[90vh] w-full max-w-lg overflow-y-auto p-6">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Settings</h2>
-          <button onClick={onClose} className="rounded-md p-2 hover:bg-gray-100" aria-label="Close settings">
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-md p-2 hover:bg-gray-100"
+            aria-label="Close settings"
+          >
             ✕
           </button>
         </div>
         <div className="space-y-4">
+          <ModelSelector
+            value={model}
+            onChange={setModel}
+            onLoad={loadModel}
+            disabled={saving}
+          />
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">Timezone</label>
             <input
@@ -383,9 +401,7 @@ export default function SettingsModal({
               placeholder="e.g. America/New_York, Europe/London"
               readOnly={!timezone}
             />
-            <p className="mt-1 text-xs text-gray-500">
-              {timezone ? 'Auto-detected from browser. Edit to override.' : 'Will be auto-detected on next page load.'}
-            </p>
+            <p className="mt-1 text-xs text-gray-500">{timezone ? "Auto-detected from browser. Edit to override." : "Will be auto-detected on next page load."}</p>
           </div>
           <div className="pt-2">
             <div className="mb-1 text-sm font-medium text-gray-700">Integrations</div>
@@ -393,31 +409,24 @@ export default function SettingsModal({
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <div className="text-sm font-semibold text-gray-900">Gmail (via Composio)</div>
-                  <p className="mt-1 text-sm text-gray-600">
-                    Connect Gmail to unlock email search, drafting, and automations inside OpenPoke.
-                  </p>
+                  <p className="mt-1 text-sm text-gray-600">Connect Gmail to unlock email search, drafting, and automations inside OpenPoke.</p>
                 </div>
-                <span
-                  className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${
-                    gmailConnected
-                      ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                      : 'bg-amber-50 text-amber-700 ring-amber-200'
-                  }`}
-                >
-                  {gmailConnected ? 'Connected' : 'Not connected'}
-                </span>
+                <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${gmailConnected ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-700 ring-amber-200"}`}>{gmailConnected ? "Connected" : "Not connected"}</span>
               </div>
 
               {gmailConnected ? (
                 <div className="mt-4 space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
                   <div>
                     <div className="text-[11px] uppercase tracking-wide text-gray-500">Connected account</div>
-                    <div className="mt-1 text-sm font-medium text-gray-900">{gmailEmail || 'Email unavailable'}</div>
+                    <div className="mt-1 text-sm font-medium text-gray-900">{gmailEmail || "Email unavailable"}</div>
                   </div>
                   {gmailProfileDetails.length > 0 && (
                     <dl className="grid grid-cols-1 gap-2 text-xs text-gray-600 sm:grid-cols-3">
                       {gmailProfileDetails.map((item) => (
-                        <div key={item.label} className="rounded-md border border-gray-200 bg-white/80 p-2">
+                        <div
+                          key={item.label}
+                          className="rounded-md border border-gray-200 bg-white/80 p-2"
+                        >
                           <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</dt>
                           <dd className="mt-1 text-sm font-medium text-gray-900">{item.value}</dd>
                         </div>
@@ -425,12 +434,20 @@ export default function SettingsModal({
                     </dl>
                   )}
                   {gmailStatusMessage && (
-                    <p className="text-xs text-gray-500" aria-live="polite">{gmailStatusMessage}</p>
+                    <p
+                      className="text-xs text-gray-500"
+                      aria-live="polite"
+                    >
+                      {gmailStatusMessage}
+                    </p>
                   )}
                 </div>
               ) : (
-                <div className="mt-4 rounded-lg border border-dashed border-gray-200 p-3 text-sm text-gray-500" aria-live="polite">
-                  {gmailStatusMessage || 'Complete the connection to view your Gmail account details here.'}
+                <div
+                  className="mt-4 rounded-lg border border-dashed border-gray-200 p-3 text-sm text-gray-500"
+                  aria-live="polite"
+                >
+                  {gmailStatusMessage || "Complete the connection to view your Gmail account details here."}
                 </div>
               )}
 
@@ -469,16 +486,28 @@ export default function SettingsModal({
           </div>
         </div>
 
+        {saveError && (
+          <p
+            role="alert"
+            className="mt-4 text-sm text-red-600"
+          >
+            {saveError}
+          </p>
+        )}
         <div className="mt-6 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-md px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Cancel</button>
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-md px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+          >
+            Cancel
+          </button>
           <button
             className="btn"
-            onClick={() => {
-              onSave({ timezone });
-              onClose();
-            }}
+            onClick={saveSettings}
+            disabled={saving}
           >
-            Save
+            {saving ? "Saving…" : "Save"}
           </button>
         </div>
       </div>

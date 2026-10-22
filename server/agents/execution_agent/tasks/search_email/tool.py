@@ -139,6 +139,7 @@ async def _run_email_search(
     queries: List[str] = []
     emails: Dict[str, GmailSearchEmail] = {}
     selected_ids: Optional[List[str]] = None
+    search_errors: List[str] = []
     
     for iteration in range(MAX_LLM_ITERATIONS):
         logger.debug(
@@ -170,6 +171,8 @@ async def _run_email_search(
         
         # Handle case where LLM doesn't make tool calls
         if not tool_calls:
+            if emails:
+                raise RuntimeError("The search model stopped without selecting the emails it found. Retry the search.")
             logger.info(f"[EMAIL_SEARCH] LLM completed search - no more queries needed")
             selected_ids = []
             break
@@ -184,6 +187,9 @@ async def _run_email_search(
         
         # Add tool responses to conversation
         for call_id, content in tool_responses:
+            tool_result = json.loads(content)
+            if tool_result.get("status") == "error":
+                search_errors.append(tool_result.get("error") or "Gmail search failed")
             messages.append({
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -199,6 +205,11 @@ async def _run_email_search(
         logger.error(f"[EMAIL_SEARCH] {ERROR_ITERATION_LIMIT}")
         raise RuntimeError(ERROR_ITERATION_LIMIT)
     
+    if not queries:
+        detail = search_errors[-1] if search_errors else "The model finished without running a Gmail search."
+        raise RuntimeError(f"No Gmail search completed successfully. {detail}")
+    if search_errors and not selected_ids:
+        raise RuntimeError(f"Email search was incomplete; cannot confirm there were no matches. {search_errors[-1]}")
     final_result = _build_response(queries, emails, selected_ids or [])
     unique_queries = list(dict.fromkeys(queries))
     logger.info(f"[EMAIL_SEARCH] Completed - {len(unique_queries)} queries executed, {len(final_result)} emails selected")
@@ -324,6 +335,9 @@ async def _perform_search(
             query=query,
             error=str(exc),
         )
+
+    if raw_result.get("successful") is False or raw_result.get("error"):
+        return EmailSearchToolResult(status="error", query=query, error=f"Gmail API search failed: {raw_result.get('error') or 'Composio reported an unsuccessful request'}")
 
     processed_emails, next_page_token = parse_gmail_fetch_response(
         raw_result,

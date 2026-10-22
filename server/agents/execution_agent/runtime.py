@@ -152,7 +152,7 @@ class ExecutionAgentRuntime:
     async def _make_llm_call(self, system_prompt: str, messages: List[Dict], with_tools: bool) -> Dict:
         """Make an LLM call."""
         tools_to_send = self.tool_schemas if with_tools else None
-        logger.info(f"[{self.agent.name}] Calling LLM with model: {self.model}, tools: {len(tools_to_send) if tools_to_send else 0}")
+        logger.info("[%s] Calling LLM, tools: %d", self.agent.name, len(tools_to_send or []))
         return await request_chat_completion(
             model=self.model,
             messages=messages,

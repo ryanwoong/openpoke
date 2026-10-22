@@ -10,10 +10,11 @@ _prompt_path = Path(__file__).parent / "system_prompt.md"
 SYSTEM_PROMPT = _prompt_path.read_text(encoding="utf-8").strip()
 
 
-# Load and return the pre-defined system prompt from markdown file
 def build_system_prompt() -> str:
-    """Return the static system prompt for the interaction agent."""
-    return SYSTEM_PROMPT
+    """Include current integration state in the interaction prompt."""
+    from ...services.gmail.client import get_integration_context
+
+    return f"{SYSTEM_PROMPT}\n\n{get_integration_context()}"
 
 
 # Build structured message with conversation history, active agents, and current turn

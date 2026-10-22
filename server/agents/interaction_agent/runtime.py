@@ -39,6 +39,7 @@ class _LoopSummary:
     user_messages: List[str] = field(default_factory=list)
     tool_names: List[str] = field(default_factory=list)
     execution_agents: Set[str] = field(default_factory=set)
+    yielded: bool = False
 
 
 class InteractionAgentRuntime:
@@ -164,14 +165,17 @@ class InteractionAgentRuntime:
                 break
 
             for tool_call in parsed_tool_calls:
+                if summary.yielded and tool_call.name != "send_message_to_agent":
+                    continue
                 summary.tool_names.append(tool_call.name)
 
-                if tool_call.name == "send_message_to_agent":
+                result = self._execute_tool(tool_call)
+
+                if result.success and tool_call.name == "send_message_to_agent":
                     agent_name = tool_call.arguments.get("agent_name")
                     if isinstance(agent_name, str) and agent_name:
                         summary.execution_agents.add(agent_name)
-
-                result = self._execute_tool(tool_call)
+                    summary.yielded = True
 
                 if result.user_message:
                     summary.user_messages.append(result.user_message)
@@ -182,6 +186,13 @@ class InteractionAgentRuntime:
                     "content": self._format_tool_result(tool_call, result),
                 }
                 messages.append(tool_message)
+
+                if result.success and tool_call.name == "wait":
+                    summary.yielded = True
+                    break
+
+            if summary.yielded:
+                return summary
         else:
             raise RuntimeError("Reached tool iteration limit without final response")
 
@@ -208,7 +219,7 @@ class InteractionAgentRuntime:
 
         logger.debug(
             "Interaction agent calling LLM",
-            extra={"model": self.model, "tools": len(self.tool_schemas)},
+            extra={"tools": len(self.tool_schemas)},
         )
         return await request_chat_completion(
             model=self.model,
@@ -400,5 +411,8 @@ class InteractionAgentRuntime:
 
         if summary.user_messages:
             return summary.user_messages[-1]
+
+        if summary.yielded:
+            return ""
 
         return summary.last_assistant_text

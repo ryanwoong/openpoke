@@ -3,6 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Spinner } from "./ui/LoadingIndicator";
 import ModelSelector from "./ModelSelector";
 import { AnimatedDialog } from "./ui/AnimatedDialog";
+import styles from "./SettingsModal.module.css";
+
+const settingsTabs = ["Main", "Model", "Integrations"] as const;
 
 export type Settings = {
   timezone: string;
@@ -85,6 +88,7 @@ function deriveEmailFromPayload(payload: any): string {
 }
 
 export default function SettingsModal({ open, onClose, settings, onSave }: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => void }) {
+  const [activeTab, setActiveTab] = useState<(typeof settingsTabs)[number]>("Main");
   const [timezone, setTimezone] = useState(settings.timezone);
   const [model, setModel] = useState("");
   const [savedModel, setSavedModel] = useState("");
@@ -97,6 +101,7 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
 
   useEffect(() => {
     if (open) {
+      setActiveTab("Main");
       setModel("");
       setSavedModel("");
       setSaveError("");
@@ -377,8 +382,9 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
       onClose={onClose}
       dismissible={!saving}
       labelledBy="settings-title"
+      panelClassName={`${styles.window} !max-w-3xl !overflow-hidden`}
     >
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex shrink-0 items-center justify-between">
         <h2
           id="settings-title"
           className="text-lg font-semibold"
@@ -394,109 +400,175 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
           ✕
         </button>
       </div>
-      <div className="space-y-4">
-        <ModelSelector
-          value={model}
-          onChange={setModel}
-          onLoad={loadModel}
-          disabled={saving}
-        />
-        <div>
-          <label className="mb-1 block text-sm font-medium text-gray-700">Timezone</label>
-          <input
-            className="input"
-            type="text"
-            value={timezone}
-            onChange={(e) => setTimezone(e.target.value)}
-            placeholder="e.g. America/New_York, Europe/London"
-            readOnly={!timezone}
-          />
-          <p className="mt-1 text-xs text-gray-500">{timezone ? "Auto-detected from browser. Edit to override." : "Will be auto-detected on next page load."}</p>
+      <div className="flex min-h-0 flex-1 gap-3 sm:gap-6">
+        <div
+          role="tablist"
+          aria-label="Settings sections"
+          aria-orientation="vertical"
+          className="flex w-24 shrink-0 flex-col gap-1 border-r border-gray-200 pr-2 sm:w-36 sm:pr-4"
+        >
+          {settingsTabs.map((tab, index) => (
+            <button
+              key={tab}
+              id={`settings-tab-${tab.toLowerCase()}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              aria-controls={`settings-panel-${tab.toLowerCase()}`}
+              tabIndex={activeTab === tab ? 0 : -1}
+              className={`rounded-lg px-2 py-2 text-left text-xs font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 sm:px-3 sm:text-sm ${activeTab === tab ? "bg-gray-100 text-gray-900" : "text-gray-500 hover:bg-gray-50 hover:text-gray-900"}`}
+              onClick={() => setActiveTab(tab)}
+              onKeyDown={(event) => {
+                let nextIndex = index;
+                if (event.key === "ArrowDown") nextIndex = (index + 1) % settingsTabs.length;
+                else if (event.key === "ArrowUp") nextIndex = (index + settingsTabs.length - 1) % settingsTabs.length;
+                else if (event.key === "Home") nextIndex = 0;
+                else if (event.key === "End") nextIndex = settingsTabs.length - 1;
+                else return;
+                event.preventDefault();
+                setActiveTab(settingsTabs[nextIndex]);
+                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[nextIndex]?.focus();
+              }}
+            >
+              {tab}
+            </button>
+          ))}
         </div>
-        <div className="pt-2">
-          <div className="mb-1 text-sm font-medium text-gray-700">Integrations</div>
-          <div className="rounded-xl border border-gray-200 bg-white/70 p-4 shadow-sm">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <div className="text-sm font-semibold text-gray-900">Gmail (via Composio)</div>
-                <p className="mt-1 text-sm text-gray-600">Connect Gmail to unlock email search, drafting, and automations inside OpenPoke.</p>
-              </div>
-              <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${isRefreshingGmail ? "bg-gray-50 text-gray-600 ring-gray-200" : gmailConnected ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-700 ring-amber-200"}`}>
-                {isRefreshingGmail && <Spinner />}
-                {isRefreshingGmail ? "Checking Gmail…" : gmailConnected ? "Connected" : "Not connected"}
-              </span>
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div
+            id="settings-panel-main"
+            className={styles.tabPanel}
+            role="tabpanel"
+            aria-labelledby="settings-tab-main"
+            hidden={activeTab !== "Main"}
+            tabIndex={0}
+          >
+            <div>
+              <label
+                htmlFor="settings-timezone"
+                className="mb-1 block text-sm font-medium text-gray-700"
+              >
+                Timezone
+              </label>
+              <input
+                id="settings-timezone"
+                className="input"
+                type="text"
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                placeholder="e.g. America/New_York, Europe/London"
+                readOnly={!timezone}
+              />
+              <p className="mt-1 text-xs text-gray-500">{timezone ? "Auto-detected from browser. Edit to override." : "Will be auto-detected on next page load."}</p>
             </div>
-
-            {gmailConnected ? (
-              <div className="mt-4 space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
+          </div>
+          <div
+            id="settings-panel-model"
+            className={styles.tabPanel}
+            role="tabpanel"
+            aria-labelledby="settings-tab-model"
+            hidden={activeTab !== "Model"}
+            tabIndex={0}
+          >
+            <ModelSelector
+              value={model}
+              onChange={setModel}
+              onLoad={loadModel}
+              disabled={saving}
+            />
+          </div>
+          <div
+            id="settings-panel-integrations"
+            className={styles.tabPanel}
+            role="tabpanel"
+            aria-labelledby="settings-tab-integrations"
+            hidden={activeTab !== "Integrations"}
+            tabIndex={0}
+          >
+            <h3 className="mb-3 text-sm font-semibold text-gray-900">Integrations</h3>
+            <div className="rounded-xl border border-gray-200 bg-white/70 p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <div className="text-[11px] uppercase tracking-wide text-gray-500">Connected account</div>
-                  <div className="mt-1 text-sm font-medium text-gray-900">{gmailEmail || "Email unavailable"}</div>
+                  <div className="text-sm font-semibold text-gray-900">Gmail (via Composio)</div>
+                  <p className="mt-1 text-sm text-gray-600">Connect Gmail to unlock email search, drafting, and automations inside OpenPoke.</p>
                 </div>
-                {gmailProfileDetails.length > 0 && (
-                  <dl className="grid grid-cols-1 gap-2 text-xs text-gray-600 sm:grid-cols-3">
-                    {gmailProfileDetails.map((item) => (
-                      <div
-                        key={item.label}
-                        className="rounded-md border border-gray-200 bg-white/80 p-2"
-                      >
-                        <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</dt>
-                        <dd className="mt-1 text-sm font-medium text-gray-900">{item.value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                )}
-                {gmailStatusMessage && (
-                  <p
-                    className="text-xs text-gray-500"
-                    aria-live="polite"
-                  >
-                    {gmailStatusMessage}
-                  </p>
-                )}
+                <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${isRefreshingGmail ? "bg-gray-50 text-gray-600 ring-gray-200" : gmailConnected ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-700 ring-amber-200"}`}>
+                  {isRefreshingGmail && <Spinner />}
+                  {isRefreshingGmail ? "Checking Gmail…" : gmailConnected ? "Connected" : "Not connected"}
+                </span>
               </div>
-            ) : (
-              <div
-                className="mt-4 rounded-lg border border-dashed border-gray-200 p-3 text-sm text-gray-500"
-                aria-live="polite"
-              >
-                {isRefreshingGmail ? "Loading Gmail account details…" : gmailStatusMessage || "Complete the connection to view your Gmail account details here."}
-              </div>
-            )}
 
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                className="btn gap-2"
-                onClick={handleConnectGmail}
-                disabled={connectingGmail || isRefreshingGmail || isDisconnecting}
-                aria-busy={connectingGmail}
-              >
-                {connectingGmail && <Spinner className="rounded-full bg-white p-0.5" />}
-                {connectButtonLabel}
-              </button>
-              <button
-                type="button"
-                className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
-                onClick={refreshGmailStatus}
-                disabled={isRefreshingGmail || connectingGmail || isDisconnecting}
-                aria-busy={isRefreshingGmail}
-              >
-                {isRefreshingGmail && <Spinner />}
-                {refreshButtonLabel}
-              </button>
-              {gmailConnected && (
+              {gmailConnected ? (
+                <div className="mt-4 space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Connected account</div>
+                    <div className="mt-1 text-sm font-medium text-gray-900">{gmailEmail || "Email unavailable"}</div>
+                  </div>
+                  {gmailProfileDetails.length > 0 && (
+                    <dl className="grid grid-cols-1 gap-2 text-xs text-gray-600 sm:grid-cols-3">
+                      {gmailProfileDetails.map((item) => (
+                        <div
+                          key={item.label}
+                          className="rounded-md border border-gray-200 bg-white/80 p-2"
+                        >
+                          <dt className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">{item.label}</dt>
+                          <dd className="mt-1 text-sm font-medium text-gray-900">{item.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  {gmailStatusMessage && (
+                    <p
+                      className="text-xs text-gray-500"
+                      aria-live="polite"
+                    >
+                      {gmailStatusMessage}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div
+                  className="mt-4 rounded-lg border border-dashed border-gray-200 p-3 text-sm text-gray-500"
+                  aria-live="polite"
+                >
+                  {isRefreshingGmail ? "Loading Gmail account details…" : gmailStatusMessage || "Complete the connection to view your Gmail account details here."}
+                </div>
+              )}
+
+              <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className="inline-flex items-center gap-2 rounded-md border border-transparent bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
-                  onClick={handleDisconnectGmail}
-                  disabled={isDisconnecting || connectingGmail || isRefreshingGmail}
-                  aria-busy={isDisconnecting}
+                  className="btn gap-2"
+                  onClick={handleConnectGmail}
+                  disabled={connectingGmail || isRefreshingGmail || isDisconnecting}
+                  aria-busy={connectingGmail}
                 >
-                  {isDisconnecting && <Spinner />}
-                  {disconnectButtonLabel}
+                  {connectingGmail && <Spinner className="rounded-full bg-white p-0.5" />}
+                  {connectButtonLabel}
                 </button>
-              )}
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={refreshGmailStatus}
+                  disabled={isRefreshingGmail || connectingGmail || isDisconnecting}
+                  aria-busy={isRefreshingGmail}
+                >
+                  {isRefreshingGmail && <Spinner />}
+                  {refreshButtonLabel}
+                </button>
+                {gmailConnected && (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded-md border border-transparent bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={handleDisconnectGmail}
+                    disabled={isDisconnecting || connectingGmail || isRefreshingGmail}
+                    aria-busy={isDisconnecting}
+                  >
+                    {isDisconnecting && <Spinner />}
+                    {disconnectButtonLabel}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -505,12 +577,12 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
       {saveError && (
         <p
           role="alert"
-          className="mt-4 text-sm text-red-600"
+          className="mt-4 shrink-0 text-sm text-red-600"
         >
           {saveError}
         </p>
       )}
-      <div className="mt-6 flex justify-end gap-2">
+      <div className="mt-6 flex shrink-0 justify-end gap-2 border-t border-gray-200 pt-4">
         <button
           onClick={onClose}
           disabled={saving}

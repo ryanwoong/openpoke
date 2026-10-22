@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import styles from "./AnimatedDialog.module.css";
 
-export function AnimatedDialog({ open, onClose, dismissible = true, labelledBy, children }: { open: boolean; onClose: () => void; dismissible?: boolean; labelledBy: string; children: ReactNode }) {
+export function AnimatedDialog({ open, onClose, dismissible = true, labelledBy, panelClassName = "", children }: { open: boolean; onClose: () => void; dismissible?: boolean; labelledBy: string; panelClassName?: string; children: ReactNode }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [present, setPresent] = useState(open);
   useEffect(() => {
@@ -44,7 +44,7 @@ export function AnimatedDialog({ open, onClose, dismissible = true, labelledBy, 
         if (event.target === event.currentTarget && dismissible) onClose();
       }}
     >
-      {(open || present) && <div className={`${styles.panel} card`}>{children}</div>}
+      {(open || present) && <div className={`${styles.panel} card ${panelClassName}`}>{children}</div>}
     </dialog>
   );
 }

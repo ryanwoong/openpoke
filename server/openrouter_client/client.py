@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -70,25 +71,28 @@ async def request_chat_completion(
     url = f"{base_url.rstrip('/')}/chat/completions"
     logger.info("OpenRouter request: model=%s, tools=%d", payload["model"], len(tools or []))
 
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                url,
-                headers=_headers(api_key=api_key),
-                json=payload,
-                timeout=60.0,  # Set reasonable timeout instead of None
-            )
+    for attempt in range(2):
+        async with httpx.AsyncClient() as client:
             try:
+                response = await client.post(
+                    url,
+                    headers=_headers(api_key=api_key),
+                    json=payload,
+                    timeout=60.0,
+                )
                 response.raise_for_status()
+                result = response.json()
+                logger.info("OpenRouter response: requested_model=%s, returned_model=%s", payload["model"], result.get("model", "unknown"))
+                return result
             except httpx.HTTPStatusError as exc:
                 _handle_response_error(exc)
-            result = response.json()
-            logger.info("OpenRouter response: requested_model=%s, returned_model=%s", payload["model"], result.get("model", "unknown"))
-            return result
-        except httpx.HTTPStatusError as exc:  # pragma: no cover - handled above
-            _handle_response_error(exc)
-        except httpx.HTTPError as exc:
-            raise OpenRouterError(f"OpenRouter request failed: {exc}") from exc
+            except (httpx.ConnectError, ssl.SSLError) as exc:
+                if attempt == 0 and not isinstance(exc, ssl.SSLCertVerificationError):
+                    logger.warning("OpenRouter connection failed; retrying with a fresh connection: %s", exc)
+                    continue
+                raise OpenRouterError(f"OpenRouter request failed: {exc}") from exc
+            except httpx.HTTPError as exc:
+                raise OpenRouterError(f"OpenRouter request failed: {exc}") from exc
 
     raise OpenRouterError("OpenRouter request failed: unknown error")
 

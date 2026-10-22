@@ -494,3 +494,26 @@
     margin-bottom: 20px;
   }
 }
+
+.chat-header-new-reply .assistant-status-dot {
+  animation: reply-pulse 1s ease-out infinite;
+}
+
+.chat-header-new-reply p {
+  color: #3b9255;
+}
+
+@keyframes reply-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgb(59 146 85 / 40%);
+  }
+  100% {
+    box-shadow: 0 0 0 8px rgb(59 146 85 / 0%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-header-new-reply .assistant-status-dot {
+    animation: none;
+  }
+}

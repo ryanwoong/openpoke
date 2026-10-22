@@ -11,15 +11,18 @@ const settingsTabs = ["Main", "Model", "Integrations"] as const;
 
 export type Settings = {
   timezone: string;
+  chime: boolean;
+  titleAlert: boolean;
 };
 
 export function useSettings() {
-  const [settings, setSettings] = useState<Settings>({ timezone: "" });
+  const [settings, setSettings] = useState<Settings>({ timezone: "", chime: true, titleAlert: true });
 
   useEffect(() => {
     try {
       const timezone = localStorage.getItem("user_timezone") || "";
-      setSettings({ timezone });
+      const alerts = JSON.parse(localStorage.getItem("message_alerts") || "{}");
+      setSettings({ timezone, chime: alerts?.chime !== false, titleAlert: alerts?.titleAlert !== false });
     } catch {}
   }, []);
 
@@ -27,6 +30,7 @@ export function useSettings() {
     setSettings(s);
     try {
       localStorage.setItem("user_timezone", s.timezone);
+      localStorage.setItem("message_alerts", JSON.stringify({ chime: s.chime, titleAlert: s.titleAlert }));
     } catch {}
   }, []);
 
@@ -92,6 +96,7 @@ function deriveEmailFromPayload(payload: any): string {
 export default function SettingsModal({ open, onClose, settings, onSave, initialTab = "Main", onGmailStatusChange, onDataCleared, isChatBusy = false }: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => void; initialTab?: (typeof settingsTabs)[number]; onGmailStatusChange?: (status: GmailConnection) => void; onDataCleared?: () => void; isChatBusy?: boolean }) {
   const [activeTab, setActiveTab] = useState<(typeof settingsTabs)[number]>("Main");
   const [timezone, setTimezone] = useState(settings.timezone);
+  const [alerts, setAlerts] = useState({ chime: settings.chime, titleAlert: settings.titleAlert });
   const [model, setModel] = useState("");
   const [savedModel, setSavedModel] = useState("");
   const [saving, setSaving] = useState(false);
@@ -146,7 +151,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || data.detail || "Unable to save model");
       }
-      onSave({ timezone });
+      onSave({ timezone, ...alerts });
       onClose();
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Unable to save settings");
@@ -394,7 +399,8 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
 
   useEffect(() => {
     setTimezone(settings.timezone);
-  }, [settings]);
+    setAlerts({ chime: settings.chime, titleAlert: settings.titleAlert });
+  }, [settings, open]);
 
   useEffect(() => {
     void refreshGmailStatus();
@@ -489,6 +495,30 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
               />
               <p className="mt-1 text-xs text-gray-500">{timezone ? "Auto-detected from browser. Edit to override." : "Will be auto-detected on next page load."}</p>
             </div>
+            <fieldset className="mt-6">
+              <legend className="text-sm font-semibold text-gray-900">Background alerts</legend>
+              <p className="mt-1 text-xs text-gray-500">Get alerted when a new reply arrives while you’re in another tab or app.</p>
+              {(
+                [
+                  ["chime", "Play a chime"],
+                  ["titleAlert", "Change tab title to “New message!”"],
+                ] as const
+              ).map(([key, label]) => (
+                <label
+                  key={key}
+                  className={styles.alertOption}
+                >
+                  <span>{label}</span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    className={styles.alertSwitch}
+                    checked={alerts[key]}
+                    onChange={(event) => setAlerts((previous) => ({ ...previous, [key]: event.target.checked }))}
+                  />
+                </label>
+              ))}
+            </fieldset>
             <div className="mt-8 rounded-xl border border-red-200 bg-red-50/40 p-4">
               <h3 className="text-sm font-semibold text-gray-900">Clear Data</h3>
               <p className="mt-2 text-sm text-gray-600">Permanently delete your conversation, agent history, reminders, and scheduled automations. This cannot be undone.</p>

@@ -12,28 +12,19 @@ import type { ChatBubble } from '@/components/chat/types';
 const POLL_INTERVAL_MS = 1500;
 
 const formatEscapeCharacters = (text: string): string => {
-  return text
-    .replace(/\\n/g, '\n')
-    .replace(/\\t/g, '\t')
-    .replace(/\\r/g, '\r')
-    .replace(/\\\\/g, '\\');
+  return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r').replace(/\\\\/g, '\\');
 };
 
-const isRenderableMessage = (entry: any) =>
-  typeof entry?.role === 'string' &&
-  typeof entry?.content === 'string' &&
-  entry.content.trim().length > 0;
+const isRenderableMessage = (entry: any) => typeof entry?.role === 'string' && typeof entry?.content === 'string' && entry.content.trim().length > 0;
 
 const toBubbles = (payload: any): ChatBubble[] => {
   if (!Array.isArray(payload?.messages)) return [];
 
-  return payload.messages
-    .filter(isRenderableMessage)
-    .map((message: any, index: number) => ({
-      id: `history-${index}`,
-      role: message.role,
-      text: formatEscapeCharacters(message.content),
-    }));
+  return payload.messages.filter(isRenderableMessage).map((message: any, index: number) => ({
+    id: `history-${index}`,
+    role: message.role,
+    text: formatEscapeCharacters(message.content),
+  }));
 };
 
 export default function Page() {
@@ -71,17 +62,17 @@ export default function Page() {
     const detectAndStoreTimezone = async () => {
       // Only run if timezone not already stored
       if (settings.timezone) return;
-      
+
       try {
         const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        
+
         // Send to server
         const response = await fetch('/api/timezone', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ timezone: browserTimezone }),
         });
-        
+
         if (response.ok) {
           // Update local settings
           setSettings({ ...settings, timezone: browserTimezone });
@@ -94,7 +85,6 @@ export default function Page() {
 
     void detectAndStoreTimezone();
   }, [settings, setSettings]);
-
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -121,7 +111,7 @@ export default function Page() {
         role: 'user',
         text: formatEscapeCharacters(trimmed),
       };
-      setMessages(prev => {
+      setMessages((prev) => {
         const newMessages = [...prev, userMessage];
         return newMessages;
       });
@@ -143,28 +133,28 @@ export default function Page() {
         console.error('Failed to send message', err);
         setError(err?.message || 'Failed to send message');
         // Remove the optimistic message on error
-        setMessages(prev => prev.filter(msg => msg.id !== userMessage.id));
+        setMessages((prev) => prev.filter((msg) => msg.id !== userMessage.id));
         setIsWaitingForResponse(false);
         throw err instanceof Error ? err : new Error('Failed to send message');
       } finally {
         // Poll until we get the assistant's response
         let pollAttempts = 0;
         const maxPollAttempts = 30; // Max 30 attempts (30 seconds)
-        
+
         const pollForAssistantResponse = async () => {
           pollAttempts++;
-          
+
           try {
             const res = await fetch('/api/chat/history', { cache: 'no-store' });
             if (res.ok) {
               const data = await res.json();
               const currentMessages = toBubbles(data);
-              
+
               // Check if the last message is from assistant and contains our user message
               const lastMessage = currentMessages[currentMessages.length - 1];
-              const hasUserMessage = currentMessages.some(msg => msg.text === trimmed && msg.role === 'user');
+              const hasUserMessage = currentMessages.some((msg) => msg.text === trimmed && msg.role === 'user');
               const hasAssistantResponse = lastMessage?.role === 'assistant' && hasUserMessage;
-              
+
               if (hasAssistantResponse) {
                 // We got the assistant response, update messages and stop loading
                 setMessages(currentMessages);
@@ -175,7 +165,7 @@ export default function Page() {
           } catch (err) {
             console.error('Error polling for response:', err);
           }
-          
+
           // Continue polling if we haven't exceeded max attempts
           if (pollAttempts < maxPollAttempts) {
             setTimeout(pollForAssistantResponse, 1000); // Poll every second
@@ -185,7 +175,7 @@ export default function Page() {
             await loadHistory();
           }
         };
-        
+
         // Start polling after a brief delay
         setTimeout(pollForAssistantResponse, 1000);
       }
@@ -221,16 +211,22 @@ export default function Page() {
     }
   }, [canSubmit, input, sendMessage, setInput]);
 
-  const handleInputChange = useCallback((value: string) => {
-    setInput(value);
-  }, [setInput]);
+  const handleInputChange = useCallback(
+    (value: string) => {
+      setInput(value);
+    },
+    [setInput],
+  );
 
   const clearError = useCallback(() => setError(null), [setError]);
 
   return (
     <main className="chat-bg min-h-screen p-4 sm:p-6">
       <div className="chat-wrap flex flex-col">
-        <ChatHeader onOpenSettings={openSettings} onClearHistory={triggerClearHistory} />
+        <ChatHeader
+          onOpenSettings={openSettings}
+          onClearHistory={triggerClearHistory}
+        />
 
         <div className="card flex-1 overflow-hidden">
           <ChatMessages
@@ -241,7 +237,12 @@ export default function Page() {
           />
 
           <div className="border-t border-gray-200 p-3">
-            {error && <ErrorBanner message={error} onDismiss={clearError} />}
+            {error && (
+              <ErrorBanner
+                message={error}
+                onDismiss={clearError}
+              />
+            )}
 
             <ChatInput
               value={input}
@@ -253,7 +254,12 @@ export default function Page() {
           </div>
         </div>
 
-        <SettingsModal open={open} onClose={closeSettings} settings={settings} onSave={setSettings} />
+        <SettingsModal
+          open={open}
+          onClose={closeSettings}
+          settings={settings}
+          onSave={setSettings}
+        />
       </div>
     </main>
   );

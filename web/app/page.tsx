@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import SettingsModal, { useSettings } from "@/components/SettingsModal";
+import SettingsModal, { useSettings, type GmailConnection } from "@/components/SettingsModal";
+import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatMessages } from "@/components/chat/ChatMessages";
@@ -18,7 +19,8 @@ export default function Page() {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-  const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [gmail, setGmail] = useState<GmailConnection>({ connected: false, email: "", checking: true });
+  const [settingsTab, setSettingsTab] = useState<"Main" | "Integrations">("Main");
   const [messages, setMessages] = useState<ChatBubble[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
@@ -26,7 +28,14 @@ export default function Page() {
     items: messages,
     isWaiting: isWaitingForResponse,
   });
-  const openSettings = useCallback(() => setOpen(true), [setOpen]);
+  const openSettings = useCallback(() => {
+    setSettingsTab("Main");
+    setOpen(true);
+  }, []);
+  const openGmail = useCallback(() => {
+    setSettingsTab("Integrations");
+    setOpen(true);
+  }, []);
   const closeSettings = useCallback(() => setOpen(false), [setOpen]);
 
   const loadHistory = useCallback(async () => {
@@ -85,7 +94,7 @@ export default function Page() {
   }, [loadHistory]);
 
   const canSubmit = input.trim().length > 0;
-  const inputPlaceholder = "Type a message…";
+  const inputPlaceholder = "Ask anything, or give me something to do…";
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -173,26 +182,6 @@ export default function Page() {
     [loadHistory],
   );
 
-  const handleClearHistory = useCallback(async () => {
-    setIsClearingHistory(true);
-    try {
-      const res = await fetch("/api/chat/history", { method: "DELETE" });
-      if (!res.ok) {
-        console.error("Failed to clear chat history", res.statusText);
-        return;
-      }
-      setMessages([]);
-    } catch (err) {
-      console.error("Failed to clear chat history", err);
-    } finally {
-      setIsClearingHistory(false);
-    }
-  }, [setMessages]);
-
-  const triggerClearHistory = useCallback(() => {
-    void handleClearHistory();
-  }, [handleClearHistory]);
-
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
     const value = input;
@@ -214,49 +203,51 @@ export default function Page() {
   const clearError = useCallback(() => setError(null), [setError]);
 
   return (
-    <main className="chat-bg min-h-screen p-4 sm:p-6">
-      <div className="chat-wrap flex flex-col">
-        <ChatHeader
-          onOpenSettings={openSettings}
-          onClearHistory={triggerClearHistory}
-          isClearingHistory={isClearingHistory}
+    <main className="chat-workspace">
+      <ChatSidebar
+        email={gmail.connected ? gmail.email : ""}
+        onOpenSettings={openSettings}
+      />
+      <section
+        id="conversation"
+        className="chat-main"
+        aria-label="Your assistant"
+      >
+        <ChatHeader isWaitingForResponse={isWaitingForResponse} />
+        <ChatMessages
+          messages={messages}
           isLoadingHistory={isLoadingHistory}
+          isWaitingForResponse={isWaitingForResponse}
+          scrollContainerRef={scrollContainerRef}
+          onScroll={handleScroll}
+          onSuggestion={setInput}
         />
-
-        <div className="card flex-1 overflow-hidden">
-          <ChatMessages
-            messages={messages}
-            isLoadingHistory={isLoadingHistory}
-            isWaitingForResponse={isWaitingForResponse}
-            scrollContainerRef={scrollContainerRef}
-            onScroll={handleScroll}
-          />
-
-          <div className="border-t border-gray-200 p-3">
-            {error && (
-              <ErrorBanner
-                message={error}
-                onDismiss={clearError}
-              />
-            )}
-
-            <ChatInput
-              value={input}
-              canSubmit={canSubmit}
-              placeholder={inputPlaceholder}
-              onChange={handleInputChange}
-              onSubmit={handleSubmit}
+        <div className="chat-composer-area">
+          {error && (
+            <ErrorBanner
+              message={error}
+              onDismiss={clearError}
             />
-          </div>
+          )}
+          <ChatInput
+            value={input}
+            canSubmit={canSubmit}
+            placeholder={inputPlaceholder}
+            onChange={handleInputChange}
+            onSubmit={handleSubmit}
+            gmail={gmail}
+            onOpenGmail={openGmail}
+          />
         </div>
-
-        <SettingsModal
-          open={open}
-          onClose={closeSettings}
-          settings={settings}
-          onSave={setSettings}
-        />
-      </div>
+      </section>
+      <SettingsModal
+        open={open}
+        onClose={closeSettings}
+        settings={settings}
+        onSave={setSettings}
+        initialTab={settingsTab}
+        onGmailStatusChange={setGmail}
+      />
     </main>
   );
 }

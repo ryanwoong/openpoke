@@ -5,6 +5,8 @@ import ModelSelector from "./ModelSelector";
 import { AnimatedDialog } from "./ui/AnimatedDialog";
 import styles from "./SettingsModal.module.css";
 
+export type GmailConnection = { connected: boolean; email: string; checking: boolean };
+
 const settingsTabs = ["Main", "Model", "Integrations"] as const;
 
 export type Settings = {
@@ -87,7 +89,7 @@ function deriveEmailFromPayload(payload: any): string {
   return "";
 }
 
-export default function SettingsModal({ open, onClose, settings, onSave }: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => void }) {
+export default function SettingsModal({ open, onClose, settings, onSave, initialTab = "Main", onGmailStatusChange }: { open: boolean; onClose: () => void; settings: Settings; onSave: (s: Settings) => void; initialTab?: (typeof settingsTabs)[number]; onGmailStatusChange?: (status: GmailConnection) => void }) {
   const [activeTab, setActiveTab] = useState<(typeof settingsTabs)[number]>("Main");
   const [timezone, setTimezone] = useState(settings.timezone);
   const [model, setModel] = useState("");
@@ -101,12 +103,12 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
 
   useEffect(() => {
     if (open) {
-      setActiveTab("Main");
+      setActiveTab(initialTab);
       setModel("");
       setSavedModel("");
       setSaveError("");
     }
-  }, [open]);
+  }, [open, initialTab]);
 
   const saveSettings = async () => {
     setSaving(true);
@@ -137,6 +139,10 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
   const [gmailEmail, setGmailEmail] = useState("");
   const [gmailConnId, setGmailConnId] = useState("");
   const [gmailProfile, setGmailProfile] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    onGmailStatusChange?.({ connected: gmailConnected, email: gmailEmail, checking: isRefreshingGmail });
+  }, [gmailConnected, gmailEmail, isRefreshingGmail, onGmailStatusChange]);
 
   const readStoredUserId = useCallback(() => {
     if (typeof window === "undefined") return "";
@@ -368,7 +374,6 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
   }, [settings]);
 
   useEffect(() => {
-    if (!open) return;
     void refreshGmailStatus();
   }, [open, refreshGmailStatus]);
 

@@ -7,13 +7,13 @@ import "../styles/motion.css";
 
 export const metadata: Metadata = {
   title: "OpenPoke Chat",
-  description: "A beautiful OpenRouter chat powered by Vercel AI SDK",
+  description: "Your personal assistant for email, reminders, and the things that matter.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-white text-gray-900 antialiased">{children}</body>
+      <body className="min-h-screen antialiased">{children}</body>
     </html>
   );
 }

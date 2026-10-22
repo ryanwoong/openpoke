@@ -400,12 +400,12 @@ export default function SettingsModal({ open, onClose, settings, onSave }: { ope
           ✕
         </button>
       </div>
-      <div className="flex min-h-0 flex-1 gap-3 sm:gap-6">
+      <div className={styles.content}>
         <div
           role="tablist"
           aria-label="Settings sections"
           aria-orientation="vertical"
-          className="flex w-24 shrink-0 flex-col gap-1 border-r border-gray-200 pr-2 sm:w-36 sm:pr-4"
+          className={styles.tabs}
         >
           {settingsTabs.map((tab, index) => (
             <button

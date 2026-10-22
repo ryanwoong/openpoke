@@ -4,6 +4,7 @@ import json
 import os
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import status
@@ -21,7 +22,7 @@ _CLIENT: Optional[Any] = None
 _PROFILE_CACHE: Dict[str, Dict[str, Any]] = {}
 _PROFILE_CACHE_LOCK = threading.Lock()
 _ACTIVE_USER_ID_LOCK = threading.Lock()
-_ACTIVE_USER_ID: Optional[str] = None
+_ACTIVE_USER_PATH = Path(__file__).resolve().parents[2] / "data" / "gmail_user.txt"
 
 
 def _normalized(value: Optional[str]) -> str:
@@ -31,13 +32,32 @@ def _normalized(value: Optional[str]) -> str:
 def _set_active_gmail_user_id(user_id: Optional[str]) -> None:
     sanitized = _normalized(user_id)
     with _ACTIVE_USER_ID_LOCK:
-        global _ACTIVE_USER_ID
-        _ACTIVE_USER_ID = sanitized or None
+        if sanitized:
+            _ACTIVE_USER_PATH.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = _ACTIVE_USER_PATH.with_suffix(".tmp")
+            temporary_path.write_text(sanitized, encoding="utf-8")
+            temporary_path.replace(_ACTIVE_USER_PATH)
+        else:
+            _ACTIVE_USER_PATH.unlink(missing_ok=True)
 
 
 def get_active_gmail_user_id() -> Optional[str]:
     with _ACTIVE_USER_ID_LOCK:
-        return _ACTIVE_USER_ID
+        try:
+            return _ACTIVE_USER_PATH.read_text(encoding="utf-8").strip() or None
+        except FileNotFoundError:
+            return None
+
+
+def get_integration_context() -> str:
+    gmail_state = "A verified Gmail connection is configured. Use Gmail tools to check the account and retrieve email evidence." if get_active_gmail_user_id() else "No verified Gmail connection is currently configured. The user can connect Gmail and refresh its status in Settings."
+    return (
+        "# Current integration state\n"
+        f"Gmail: {gmail_state}\n"
+        "Calendar: no calendar integration is available. Gmail can provide email evidence of events, but cannot read the calendar.\n"
+        "This state supersedes connection claims in conversation history. When Gmail is configured, do not claim it is disconnected without a current tool failure. "
+        "Use the email search task before reporting email results; the interaction agent must delegate this to an execution agent. Do not claim to have checked email without a tool result."
+    )
 
 
 def _gmail_import_client():
@@ -213,7 +233,6 @@ def initiate_connect(payload: GmailConnectPayload, settings: Settings) -> JSONRe
         )
 
     user_id = payload.user_id or f"web-{os.getpid()}"
-    _set_active_gmail_user_id(user_id)
     _clear_cached_profile(user_id)
     try:
         client = _get_composio_client(settings)
@@ -303,7 +322,10 @@ def fetch_status(payload: GmailStatusPayload) -> JSONResponse:
         elif user_id:
             _clear_cached_profile(user_id)
 
-        _set_active_gmail_user_id(user_id)
+        if connected and user_id:
+            _set_active_gmail_user_id(user_id)
+        elif account is not None and user_id and get_active_gmail_user_id() == user_id:
+            _set_active_gmail_user_id(None)
 
         return JSONResponse(
             {

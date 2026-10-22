@@ -1,32 +1,22 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useState } from 'react';
-import SettingsModal, { useSettings } from '@/components/SettingsModal';
-import { ChatHeader } from '@/components/chat/ChatHeader';
-import { ChatInput } from '@/components/chat/ChatInput';
-import { ChatMessages } from '@/components/chat/ChatMessages';
-import { ErrorBanner } from '@/components/chat/ErrorBanner';
-import { useAutoScroll } from '@/components/chat/useAutoScroll';
-import type { ChatBubble } from '@/components/chat/types';
+import { useCallback, useEffect, useState } from "react";
+import SettingsModal, { useSettings } from "@/components/SettingsModal";
+import { ChatHeader } from "@/components/chat/ChatHeader";
+import { ChatInput } from "@/components/chat/ChatInput";
+import { ChatMessages } from "@/components/chat/ChatMessages";
+import { ErrorBanner } from "@/components/chat/ErrorBanner";
+import { useAutoScroll } from "@/components/chat/useAutoScroll";
+import type { ChatBubble } from "@/components/chat/types";
+
+import { toBubbles } from "@/lib/chatHistory";
 
 const POLL_INTERVAL_MS = 1500;
-
-const isRenderableMessage = (entry: any) => typeof entry?.role === 'string' && typeof entry?.content === 'string' && entry.content.trim().length > 0;
-
-const toBubbles = (payload: any): ChatBubble[] => {
-  if (!Array.isArray(payload?.messages)) return [];
-
-  return payload.messages.filter(isRenderableMessage).map((message: any, index: number) => ({
-    id: `history-${index}`,
-    role: message.role,
-    text: message.content,
-  }));
-};
 
 export default function Page() {
   const { settings, setSettings } = useSettings();
   const [open, setOpen] = useState(false);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatBubble[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
@@ -39,13 +29,13 @@ export default function Page() {
 
   const loadHistory = useCallback(async () => {
     try {
-      const res = await fetch('/api/chat/history', { cache: 'no-store' });
+      const res = await fetch("/api/chat/history", { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
-      setMessages(toBubbles(data));
+      setMessages((previous) => toBubbles(data, previous));
     } catch (err: any) {
-      if (err?.name === 'AbortError') return;
-      console.error('Failed to load chat history', err);
+      if (err?.name === "AbortError") return;
+      console.error("Failed to load chat history", err);
     }
   }, []);
 
@@ -63,9 +53,9 @@ export default function Page() {
         const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
         // Send to server
-        const response = await fetch('/api/timezone', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const response = await fetch("/api/timezone", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ timezone: browserTimezone }),
         });
 
@@ -75,7 +65,7 @@ export default function Page() {
         }
       } catch (error) {
         // Fail silently - timezone detection is not critical
-        console.debug('Timezone detection failed:', error);
+        console.debug("Timezone detection failed:", error);
       }
     };
 
@@ -91,7 +81,7 @@ export default function Page() {
   }, [loadHistory]);
 
   const canSubmit = input.trim().length > 0;
-  const inputPlaceholder = 'Type a message…';
+  const inputPlaceholder = "Type a message…";
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -104,7 +94,7 @@ export default function Page() {
       // Optimistically add the user message immediately
       const userMessage: ChatBubble = {
         id: `user-${Date.now()}`,
-        role: 'user',
+        role: "user",
         text: trimmed,
       };
       setMessages((prev) => {
@@ -113,11 +103,11 @@ export default function Page() {
       });
 
       try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            messages: [{ role: 'user', content: trimmed }],
+            messages: [{ role: "user", content: trimmed }],
           }),
         });
 
@@ -126,12 +116,12 @@ export default function Page() {
           throw new Error(detail || `Request failed (${res.status})`);
         }
       } catch (err: any) {
-        console.error('Failed to send message', err);
-        setError(err?.message || 'Failed to send message');
+        console.error("Failed to send message", err);
+        setError(err?.message || "Failed to send message");
         // Remove the optimistic message on error
         setMessages((prev) => prev.filter((msg) => msg.id !== userMessage.id));
         setIsWaitingForResponse(false);
-        throw err instanceof Error ? err : new Error('Failed to send message');
+        throw err instanceof Error ? err : new Error("Failed to send message");
       } finally {
         // Poll until we get the assistant's response
         let pollAttempts = 0;
@@ -141,25 +131,25 @@ export default function Page() {
           pollAttempts++;
 
           try {
-            const res = await fetch('/api/chat/history', { cache: 'no-store' });
+            const res = await fetch("/api/chat/history", { cache: "no-store" });
             if (res.ok) {
               const data = await res.json();
               const currentMessages = toBubbles(data);
 
               // Check if the last message is from assistant and contains our user message
               const lastMessage = currentMessages[currentMessages.length - 1];
-              const hasUserMessage = currentMessages.some((msg) => msg.text === trimmed && msg.role === 'user');
-              const hasAssistantResponse = lastMessage?.role === 'assistant' && hasUserMessage;
+              const hasUserMessage = currentMessages.some((msg) => msg.text === trimmed && msg.role === "user");
+              const hasAssistantResponse = lastMessage?.role === "assistant" && hasUserMessage;
 
               if (hasAssistantResponse) {
                 // We got the assistant response, update messages and stop loading
-                setMessages(currentMessages);
+                setMessages((previous) => toBubbles(data, previous));
                 setIsWaitingForResponse(false);
                 return;
               }
             }
           } catch (err) {
-            console.error('Error polling for response:', err);
+            console.error("Error polling for response:", err);
           }
 
           // Continue polling if we haven't exceeded max attempts
@@ -181,14 +171,14 @@ export default function Page() {
 
   const handleClearHistory = useCallback(async () => {
     try {
-      const res = await fetch('/api/chat/history', { method: 'DELETE' });
+      const res = await fetch("/api/chat/history", { method: "DELETE" });
       if (!res.ok) {
-        console.error('Failed to clear chat history', res.statusText);
+        console.error("Failed to clear chat history", res.statusText);
         return;
       }
       setMessages([]);
     } catch (err) {
-      console.error('Failed to clear chat history', err);
+      console.error("Failed to clear chat history", err);
     }
   }, [setMessages]);
 
@@ -199,7 +189,7 @@ export default function Page() {
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
     const value = input;
-    setInput('');
+    setInput("");
     try {
       await sendMessage(value);
     } catch {

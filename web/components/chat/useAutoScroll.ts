@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from "react";
 
 interface AutoScrollOptions {
   items: ReadonlyArray<unknown>;
@@ -18,16 +18,17 @@ export const useAutoScroll = ({ items, isWaiting }: AutoScrollOptions) => {
     isUserNearBottomRef.current = distanceFromBottom <= threshold;
   }, []);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    container.scrollTo({ top: container.scrollHeight, behavior });
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    container.scrollTo({ top: container.scrollHeight, behavior: reducedMotion ? "auto" : behavior });
   }, []);
 
   useEffect(() => {
     if (isUserNearBottomRef.current) {
-      const behavior = items.length === 0 ? 'auto' : 'smooth';
+      const behavior = items.length === 0 ? "auto" : "smooth";
       scrollToBottom(behavior);
     }
   }, [items, isWaiting, scrollToBottom]);
@@ -38,4 +39,3 @@ export const useAutoScroll = ({ items, isWaiting }: AutoScrollOptions) => {
     scrollToBottom,
   };
 };
-

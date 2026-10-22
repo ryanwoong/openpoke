@@ -3,6 +3,7 @@ import "./globals.css";
 import "../styles/controls.css";
 import "../styles/chat.css";
 import "../styles/markdown.css";
+import "../styles/motion.css";
 
 export const metadata: Metadata = {
   title: "OpenPoke Chat",

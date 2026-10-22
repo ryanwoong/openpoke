@@ -1,7 +1,8 @@
 import clsx from 'clsx';
-import { RefObject } from 'react';
+import React, { RefObject } from 'react';
 
 import type { ChatBubble } from './types';
+import { MarkdownMessage } from './MarkdownMessage';
 
 interface ChatMessagesProps {
   messages: ReadonlyArray<ChatBubble>;
@@ -30,9 +31,7 @@ export function ChatMessages({ messages, isWaitingForResponse, scrollContainerRe
             key={message.id}
             className={clsx('flex', isUser ? 'justify-end' : 'justify-start')}
           >
-            <div className={clsx(isUser ? 'bubble-out' : 'bubble-in', tail ? (isUser ? 'bubble-tail-out' : 'bubble-tail-in') : '', isDraft && 'whitespace-pre-wrap')}>
-              <span className={isDraft ? 'block whitespace-pre-wrap' : 'whitespace-pre-wrap'}>{message.text}</span>
-            </div>
+            <div className={clsx('min-w-0', isUser ? 'bubble-out' : 'bubble-in', tail ? (isUser ? 'bubble-tail-out' : 'bubble-tail-in') : '', isDraft && 'whitespace-pre-wrap')}>{message.role === 'assistant' ? <MarkdownMessage text={message.text} /> : <span className={isDraft ? 'block whitespace-pre-wrap' : 'whitespace-pre-wrap'}>{message.text}</span>}</div>
           </div>
         );
       })}

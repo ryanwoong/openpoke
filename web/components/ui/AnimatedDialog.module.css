@@ -1,0 +1,72 @@
+.dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 1rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  overflow: hidden;
+}
+.dialog[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fade-in var(--motion-normal) var(--motion-ease) both;
+}
+.dialog::backdrop {
+  background: rgb(0 0 0 / 30%);
+  animation: fade-in var(--motion-normal) var(--motion-ease) both;
+}
+.panel {
+  width: 100%;
+  max-width: 32rem;
+  max-height: 90dvh;
+  overflow-y: auto;
+  padding: 1.5rem;
+  animation: panel-in var(--motion-normal) var(--motion-ease) both;
+}
+.dialog[data-state="closed"],
+.dialog[data-state="closed"]::backdrop {
+  animation: fade-out var(--motion-fast) ease-in both;
+}
+.dialog[data-state="closed"] .panel {
+  animation: panel-out var(--motion-fast) ease-in both;
+  pointer-events: none;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes panel-in {
+  from {
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes panel-out {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  to {
+    transform: translateY(8px) scale(0.98);
+  }
+}

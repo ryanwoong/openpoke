@@ -5,10 +5,16 @@ interface ErrorBannerProps {
 
 export function ErrorBanner({ message, onDismiss }: ErrorBannerProps) {
   return (
-    <div className="mb-2 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+    <div
+      role="alert"
+      className="feedback-enter mb-2 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700"
+    >
       <div className="flex items-center justify-between">
         <span>Something went wrong.</span>
-        <button className="underline" onClick={onDismiss}>
+        <button
+          className="underline"
+          onClick={onDismiss}
+        >
           Dismiss
         </button>
       </div>
@@ -16,4 +22,3 @@ export function ErrorBanner({ message, onDismiss }: ErrorBannerProps) {
     </div>
   );
 }
-

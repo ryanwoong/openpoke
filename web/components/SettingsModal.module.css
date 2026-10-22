@@ -1,0 +1,98 @@
+.window {
+  display: flex;
+  flex-direction: column;
+  height: min(40rem, 90dvh);
+}
+
+.tabPanel {
+  height: 100%;
+  overflow-y: auto;
+  padding: 4px 16px 12px 2px;
+  scrollbar-gutter: stable;
+}
+
+.tabPanel:not([hidden]) {
+  animation: tab-in var(--motion-normal) var(--motion-ease) both;
+}
+
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tabPanel:not([hidden]) {
+    animation: none;
+  }
+}
+
+.content {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  gap: 24px;
+}
+
+.tabs {
+  display: flex;
+  width: 144px;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 4px;
+  border-right: 1px solid #e5e7eb;
+  padding-right: 16px;
+}
+
+@media (max-width: 639px) {
+  .content {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .tabs {
+    width: 100%;
+    flex-direction: row;
+    border-right: 0;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 0 0 10px;
+  }
+
+  .tabs > button {
+    flex: 1;
+    text-align: center;
+  }
+}
+
+.tabPanel::-webkit-scrollbar {
+  width: 16px;
+}
+
+.tabPanel::-webkit-scrollbar-track {
+  background: #f2f4f7;
+  border-radius: 8px;
+}
+
+.tabPanel::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  background: #98a2b3;
+  border: 3px solid #f2f4f7;
+  border-radius: 8px;
+}
+
+.tabPanel::-webkit-scrollbar-thumb:hover {
+  background: #667085;
+  border-width: 2px;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .tabPanel {
+    scrollbar-width: auto;
+    scrollbar-color: #98a2b3 #f2f4f7;
+  }
+}

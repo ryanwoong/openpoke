@@ -1,67 +1,106 @@
-import clsx from 'clsx';
-import React, { RefObject } from 'react';
-
-import type { ChatBubble } from './types';
-import { MarkdownMessage } from './MarkdownMessage';
+import clsx from "clsx";
+import React, { RefObject } from "react";
+import { LoadingIndicator } from "../ui/LoadingIndicator";
+import type { ChatBubble } from "./types";
+import { MarkdownMessage } from "./MarkdownMessage";
+import { BrandMark } from "./BrandMark";
 
 interface ChatMessagesProps {
   messages: ReadonlyArray<ChatBubble>;
   isWaitingForResponse: boolean;
+  isLoadingHistory?: boolean;
   scrollContainerRef: RefObject<HTMLDivElement | null>;
   onScroll: () => void;
+  onSuggestion?: (text: string) => void;
 }
 
-export function ChatMessages({ messages, isWaitingForResponse, scrollContainerRef, onScroll }: ChatMessagesProps) {
+export function ChatMessages({ messages, isWaitingForResponse, isLoadingHistory = false, scrollContainerRef, onScroll, onSuggestion }: ChatMessagesProps) {
   return (
     <div
       ref={scrollContainerRef}
       onScroll={onScroll}
-      className="flex h-[70vh] flex-col gap-2 overflow-y-auto p-4"
+      aria-busy={isLoadingHistory}
+      className="chat-messages"
+      role="region"
+      aria-label="Conversation messages"
+      tabIndex={0}
     >
-      {messages.length === 0 && <EmptyState />}
-
-      {messages.map((message, index) => {
-        const isUser = message.role === 'user';
-        const isDraft = message.role === 'draft';
-        const next = messages[index + 1];
-        const tail = !next || next.role !== message.role;
-
-        return (
-          <div
-            key={message.id}
-            className={clsx('flex', isUser ? 'justify-end' : 'justify-start')}
-          >
-            <div className={clsx('min-w-0', isUser ? 'bubble-out' : 'bubble-in', tail ? (isUser ? 'bubble-tail-out' : 'bubble-tail-in') : '', isDraft && 'whitespace-pre-wrap')}>{message.role === 'assistant' ? <MarkdownMessage text={message.text} /> : <span className={isDraft ? 'block whitespace-pre-wrap' : 'whitespace-pre-wrap'}>{message.text}</span>}</div>
+      <div className={clsx("conversation-content", messages.length === 0 && "conversation-content-empty")}>
+        {messages.length === 0 &&
+          (isLoadingHistory ? (
+            <LoadingIndicator
+              label="Loading your conversation…"
+              className="chat-empty"
+            />
+          ) : (
+            <EmptyState onSuggestion={onSuggestion} />
+          ))}
+        {messages.map((message, index) => {
+          const isUser = message.role === "user";
+          const isDraft = message.role === "draft";
+          const showIdentity = !isUser && (index === 0 || messages[index - 1].role !== message.role);
+          return (
+            <div
+              key={message.id}
+              className={clsx("chat-message", isUser ? "user-message" : "assistant-message")}
+            >
+              {showIdentity && (
+                <div className="message-identity">
+                  <span className="assistant-avatar">
+                    <BrandMark />
+                  </span>
+                  <span>{isDraft ? "Email draft" : "OpenPoke"}</span>
+                </div>
+              )}
+              <div className={clsx(isUser ? "bubble-out" : "assistant-content", isDraft && "draft-content")}>{message.role === "assistant" ? <MarkdownMessage text={message.text} /> : <span className="whitespace-pre-wrap">{message.text}</span>}</div>
+            </div>
+          );
+        })}
+        {isWaitingForResponse && (
+          <div className="chat-message assistant-message">
+            <div className="message-identity">
+              <span className="assistant-avatar">
+                <BrandMark />
+              </span>
+              <span>OpenPoke</span>
+            </div>
+            <LoadingIndicator
+              label="Working on your request…"
+              className="assistant-content"
+            />
           </div>
-        );
-      })}
-
-      {isWaitingForResponse && <TypingIndicator />}
-    </div>
-  );
-}
-
-function TypingIndicator() {
-  return (
-    <div className="flex justify-start">
-      <div className="bubble-in bubble-tail-in">
-        <div className="flex items-center space-x-1">
-          <div className="flex space-x-1">
-            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.3s]"></div>
-            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.15s]"></div>
-            <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400"></div>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
-function EmptyState() {
+function EmptyState({ onSuggestion }: { onSuggestion?: (text: string) => void }) {
   return (
-    <div className="mx-auto my-12 max-w-sm text-center text-gray-500">
-      <h2 className="mb-2 text-xl font-semibold text-gray-700">Start a conversation</h2>
-      <p className="text-sm">Your messages will appear here. Send something to get started.</p>
+    <div className="chat-empty empty-welcome">
+      <span className="welcome-mark">
+        <BrandMark />
+      </span>
+      <p className="welcome-eyebrow">A LITTLE LESS ON YOUR PLATE</p>
+      <h2>What can I take care of?</h2>
+      <p>
+        Make room for your day. I can help with your inbox,
+        <br className="hidden sm:block" /> set reminders, and keep an eye on what matters.
+      </p>
+      {onSuggestion && (
+        <div className="welcome-suggestions">
+          {["Catch me up on my inbox", "Help me set a reminder", "What can you do?"].map((suggestion) => (
+            <button
+              type="button"
+              key={suggestion}
+              onClick={() => onSuggestion(suggestion)}
+            >
+              {suggestion}
+              <span aria-hidden="true">↗</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,3 +1,5 @@
+import { chatActivityPositions, type ChatActivity } from "../../lib/chatActivity";
+import { ChatActivitySteps } from "./ChatActivitySteps";
 import clsx from "clsx";
 import React, { RefObject } from "react";
 import { LoadingIndicator } from "../ui/LoadingIndicator";
@@ -7,6 +9,7 @@ import { BrandMark } from "./BrandMark";
 
 interface ChatMessagesProps {
   messages: ReadonlyArray<ChatBubble>;
+  activities?: ChatActivity[];
   isWaitingForResponse: boolean;
   isLoadingHistory?: boolean;
   scrollContainerRef: RefObject<HTMLDivElement | null>;
@@ -14,7 +17,17 @@ interface ChatMessagesProps {
   onSuggestion?: (text: string) => void;
 }
 
-export function ChatMessages({ messages, isWaitingForResponse, isLoadingHistory = false, scrollContainerRef, onScroll, onSuggestion }: ChatMessagesProps) {
+export function ChatMessages({ messages, activities = [], isWaitingForResponse, isLoadingHistory = false, scrollContainerRef, onScroll, onSuggestion }: ChatMessagesProps) {
+  const activityPositions = chatActivityPositions(messages, activities);
+  const hasActivity = activityPositions.has(messages.length);
+  const renderActivity = (position: number) =>
+    activityPositions.get(position)?.map((activity) => (
+      <ChatActivitySteps
+        key={activity.requestId}
+        steps={activity.steps}
+        isPreparingReply={isWaitingForResponse && position === messages.length}
+      />
+    ));
   return (
     <div
       ref={scrollContainerRef}
@@ -40,30 +53,33 @@ export function ChatMessages({ messages, isWaitingForResponse, isLoadingHistory 
           const isDraft = message.role === "draft";
           const showIdentity = !isUser && (index === 0 || messages[index - 1].role !== message.role);
           return (
-            <div
-              key={message.id}
-              className={clsx("chat-message", isUser ? "user-message" : "assistant-message")}
-            >
-              {showIdentity && (
-                <div className="message-identity">
-                  <span className="assistant-avatar">
-                    <BrandMark />
-                  </span>
-                  <span>{isDraft ? "Email draft" : "OpenPoke"}</span>
-                </div>
-              )}
-              <div className={clsx(isUser ? "bubble-out" : "assistant-content", isDraft && "draft-content")}>{message.role === "assistant" ? <MarkdownMessage text={message.text} /> : <span className="whitespace-pre-wrap">{message.text}</span>}</div>
-            </div>
+            <React.Fragment key={message.id}>
+              {renderActivity(index)}
+              <div className={clsx("chat-message", isUser ? "user-message" : "assistant-message")}>
+                {showIdentity && (
+                  <div className="message-identity">
+                    <span className="assistant-avatar">
+                      <BrandMark />
+                    </span>
+                    <span>{isDraft ? "Email draft" : "OpenPoke"}</span>
+                  </div>
+                )}
+                <div className={clsx(isUser ? "bubble-out" : "assistant-content", isDraft && "draft-content")}>{message.role === "assistant" ? <MarkdownMessage text={message.text} /> : <span className="whitespace-pre-wrap">{message.text}</span>}</div>
+              </div>
+            </React.Fragment>
           );
         })}
-        {isWaitingForResponse && (
+        {renderActivity(messages.length)}
+        {isWaitingForResponse && !hasActivity && (
           <div className="chat-message assistant-message">
-            <div className="message-identity">
-              <span className="assistant-avatar">
-                <BrandMark />
-              </span>
-              <span>OpenPoke</span>
-            </div>
+            {messages.at(-1)?.role !== "assistant" && (
+              <div className="message-identity">
+                <span className="assistant-avatar">
+                  <BrandMark />
+                </span>
+                <span>OpenPoke</span>
+              </div>
+            )}
             <LoadingIndicator
               label="Working on your request…"
               className="assistant-content"

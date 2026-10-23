@@ -124,6 +124,7 @@ class ExecutionBatchManager:
         """Record the execution result and dispatch when the batch drains."""
 
         dispatch_payload: Optional[str] = None
+        verified_replies: List[str] = []
 
         async with self._batch_lock:
             state = self._batch_state
@@ -135,11 +136,17 @@ class ExecutionBatchManager:
             state.pending -= 1
 
             if state.pending == 0:
-                dispatch_payload = self._format_batch_payload(state.results)
+                verified_replies = [entry.user_response for entry in state.results if entry.user_response]
+                dispatch_payload = self._format_batch_payload([entry for entry in state.results if not entry.user_response])
                 agent_names = [entry.agent_name for entry in state.results]
                 logger.info(f"Execution batch completed: {', '.join(agent_names)}")
                 self._batch_state = None
 
+        if verified_replies:
+            from ...services.conversation import get_conversation_log
+
+            for reply in verified_replies:
+                get_conversation_log().record_reply(reply)
         if dispatch_payload:
             await self._dispatch_to_interaction_agent(dispatch_payload)
 

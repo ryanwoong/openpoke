@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from ...execution_trace import traced
+from ...services.scheduling import AGENT_NAME, is_scheduling_request, resolve_email_approval, scheduling_context
 
 from .agent import build_system_prompt, prepare_message_with_history
 from .tools import ToolResult, get_tool_schemas, handle_tool_call
@@ -71,6 +72,24 @@ class InteractionAgentRuntime:
             transcript_before = self._load_conversation_transcript()
             self.conversation_log.record_user_message(user_message)
 
+            approval = resolve_email_approval(user_message, self.conversation_log)
+            if approval is not None:
+                self.conversation_log.record_reply(approval)
+                return InteractionResult(success=True, response=approval)
+
+            if is_scheduling_request(user_message):
+                from ..execution_agent.runtime import ExecutionAgentRuntime
+                from ...services.execution import get_agent_roster, get_execution_agent_logs
+
+                acknowledgement = "I'll check the requested time and prepare it."
+                self.conversation_log.record_reply(acknowledgement)
+                get_agent_roster().add_agent(AGENT_NAME)
+                get_execution_agent_logs().record_request(AGENT_NAME, user_message)
+                runtime = ExecutionAgentRuntime(AGENT_NAME)
+                result = await runtime.execute(f"{scheduling_context()}\n\nUser request: {user_message}", scheduling=True)
+                self.conversation_log.record_reply(result.response)
+                return InteractionResult(success=result.success, response=result.response, error=result.error, execution_agents_used=1)
+
             system_prompt = build_system_prompt()
             messages = prepare_message_with_history(user_message, transcript_before, message_type="user")
 
@@ -90,6 +109,10 @@ class InteractionAgentRuntime:
 
         except Exception as exc:
             logger.error("Interaction agent failed", extra={"error": str(exc)})
+            if is_scheduling_request(user_message):
+                response = f"I couldn't prepare that schedule: {exc}"
+                self.conversation_log.record_reply(response)
+                return InteractionResult(success=False, response=response, error=str(exc))
             return InteractionResult(
                 success=False,
                 response="",

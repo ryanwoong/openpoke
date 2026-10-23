@@ -4,12 +4,13 @@ Track bugs discovered while developing and using OpenPoke here. Keep reproductio
 
 “Implemented” means the working tree contains the change. It does not mean the change has been deployed or a live external integration has been verified.
 
-| ID                                        | Issue                                                                               | Status                                       |
-| ----------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------- |
-| [BUG-001](001-composio-oauth-endpoint.md) | Gmail authorization uses a retired Composio endpoint                                | Implemented; live OAuth verification pending |
-| [BUG-002](002-model-selection-logging.md) | Agent logs show the default model instead of the requested model                    | Implemented; covered by regression tests     |
-| [BUG-003](003-gmail-connection-state.md)  | Gmail connection disappears after restart and agents repeat stale connection claims | Implemented; covered by regression tests     |
-| [BUG-004](004-premature-chat-replies.md)  | Chat invents an email summary while the actual search is still running              | Implemented; covered by regression tests     |
+| ID                                              | Issue                                                                               | Status                                                                                 |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| [BUG-001](001-composio-oauth-endpoint.md)       | Gmail authorization uses a retired Composio endpoint                                | Implemented; live OAuth verification pending                                           |
+| [BUG-002](002-model-selection-logging.md)       | Agent logs show the default model instead of the requested model                    | Implemented; covered by regression tests                                               |
+| [BUG-003](003-gmail-connection-state.md)        | Gmail connection disappears after restart and agents repeat stale connection claims | Implemented; covered by regression tests                                               |
+| [BUG-004](004-premature-chat-replies.md)        | Chat invents an email summary while the actual search is still running              | Implemented; covered by regression tests                                               |
+| [BUG-005](005-scheduling-capability-denials.md) | Chat denies supported reminders and scheduled emails                                | Implemented; tests and isolated live-model check pass; live Gmail verification pending |
 
 Additional development notes: [email search resilience](../notes/email-search-resilience.md) and [chat reset behavior](../notes/chat-reset-behavior.md).
 

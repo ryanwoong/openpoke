@@ -10,6 +10,9 @@ from ..agents.execution_agent.batch_manager import ExecutionBatchManager
 from ..agents.execution_agent.runtime import ExecutionResult
 from ..logging_config import logger
 from .triggers import TriggerRecord, get_trigger_service
+from .scheduling import PAYLOAD_PREFIX, decode_action
+from .conversation import get_conversation_log
+from .gmail import execute_gmail_tool, get_active_gmail_user_id
 
 
 UTC = timezone.utc
@@ -80,6 +83,11 @@ class TriggerScheduler:
     async def _execute_trigger(self, trigger: TriggerRecord) -> None:
         try:
             fired_at = _utc_now()
+            action = decode_action(trigger.payload)
+            if action is not None:
+                await self._deliver_action(action)
+                self._handle_success(trigger, fired_at)
+                return
             instructions = self._format_instructions(trigger, fired_at)
             logger.info(
                 "Dispatching trigger",
@@ -108,6 +116,35 @@ class TriggerScheduler:
         finally:
             self._in_flight.discard(trigger.id)
 
+    async def _deliver_action(self, action):
+        if action["kind"] == "reminder":
+            get_conversation_log().record_reply(action["message"])
+            return
+        if not action.get("approved_at"):
+            raise ValueError("Scheduled email has not been approved; nothing was sent")
+        user_id = get_active_gmail_user_id()
+        if not user_id:
+            raise ValueError("Gmail is not connected; scheduled email was not sent")
+        draft = await asyncio.to_thread(
+            execute_gmail_tool,
+            "GMAIL_CREATE_EMAIL_DRAFT",
+            user_id,
+            arguments={"recipient_email": action["recipient_email"], "subject": action["subject"], "body": action["body"], "is_html": False},
+        )
+        self._check_gmail_result(draft)
+        data = draft.get("data", draft)
+        draft_id = data.get("draft_id") or data.get("id") or data.get("draft", {}).get("id")
+        if not draft_id:
+            raise ValueError("Gmail did not return a draft ID; scheduled email was not sent")
+        result = await asyncio.to_thread(execute_gmail_tool, "GMAIL_SEND_DRAFT", user_id, arguments={"draft_id": draft_id})
+        self._check_gmail_result(result)
+        get_conversation_log().record_reply(f"Scheduled email sent to {action['recipient_email']}: {action['subject']}")
+
+    @staticmethod
+    def _check_gmail_result(result):
+        if result.get("error") or result.get("successful") is False or result.get("success") is False:
+            raise ValueError(f"Gmail scheduled email failed: {result.get('error') or 'Service reported failure'}")
+
     def _handle_success(self, trigger: TriggerRecord, fired_at: datetime) -> None:
         logger.info(
             "Trigger completed",
@@ -125,6 +162,8 @@ class TriggerScheduler:
             },
         )
         self._service.record_failure(trigger, error)
+        if trigger.payload.startswith(PAYLOAD_PREFIX):
+            get_conversation_log().record_reply(f"Scheduled task failed: {error}")
         if trigger.recurrence_rule:
             self._service.schedule_next_occurrence(trigger, fired_at=fired_at)
         else:
@@ -141,12 +180,7 @@ class TriggerScheduler:
             metadata_lines.append(f"Start Time (UTC): {trigger.start_time}")
 
         metadata = "\n".join(f"- {line}" for line in metadata_lines)
-        return (
-            f"Trigger fired at {_isoformat(fired_at)} (UTC).\n"
-            f"Scheduled occurrence time: {scheduled_for}.\n\n"
-            f"Metadata:\n{metadata}\n\n"
-            f"Payload:\n{trigger.payload}"
-        )
+        return f"Trigger fired at {_isoformat(fired_at)} (UTC).\nScheduled occurrence time: {scheduled_for}.\n\nMetadata:\n{metadata}\n\nPayload:\n{trigger.payload}"
 
 
 _scheduler_instance: Optional[TriggerScheduler] = None

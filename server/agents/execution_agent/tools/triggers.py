@@ -9,6 +9,8 @@ from typing import Any, Callable, Dict, List, Optional
 from server.services.execution import get_execution_agent_logs
 from server.services.timezone_store import get_timezone_store
 from server.services.triggers import TriggerRecord, get_trigger_service
+from server.services.scheduling import PAYLOAD_PREFIX, decode_action
+from server.services.triggers.utils import parse_datetime, resolve_timezone
 
 _SCHEMAS: List[Dict[str, Any]] = [
     {
@@ -117,6 +119,13 @@ def _trigger_record_to_payload(record: TriggerRecord) -> Dict[str, Any]:
     }
 
 
+def _confirmation(record):
+    if record.status == "active" and record.next_trigger:
+        when = parse_datetime(record.next_trigger, resolve_timezone(record.timezone)).strftime("%Y-%m-%d %H:%M:%S %Z")
+        return f"Task scheduled for {when}: {record.payload}"
+    return f"Task status: {record.status}. No active schedule was confirmed."
+
+
 # Create a new trigger for the specified execution agent
 def _create_trigger_tool(
     *,
@@ -126,6 +135,8 @@ def _create_trigger_tool(
     start_time: Optional[str] = None,
     status: Optional[str] = None,
 ) -> Dict[str, Any]:
+    if payload.startswith(PAYLOAD_PREFIX):
+        return {"error": "Use scheduleTask for structured scheduled actions"}
     timezone_value = get_timezone_store().get_timezone()
     summary_args = {
         "recurrence_rule": recurrence_rule,
@@ -155,6 +166,7 @@ def _create_trigger_tool(
     )
     return {
         "trigger_id": record.id,
+        "user_message": _confirmation(record),
         "status": record.status,
         "next_trigger": record.next_trigger,
         "start_time": record.start_time,
@@ -179,6 +191,12 @@ def _update_trigger_tool(
         return {"error": "trigger_id must be an integer"}
 
     try:
+        existing = next((record for record in _TRIGGER_SERVICE.list_triggers(agent_name=agent_name) if record.id == trigger_id_int), None)
+        if payload is not None and payload.startswith(PAYLOAD_PREFIX):
+            return {"error": "Use scheduleTask for structured scheduled actions"}
+        if existing and decode_action(existing.payload) is not None:
+            if payload is not None or start_time is not None or recurrence_rule is not None or status not in ("paused", "completed"):
+                return {"error": "Create a replacement with scheduleTask; email changes require fresh draft approval"}
         timezone_value = get_timezone_store().get_timezone()
         record = _TRIGGER_SERVICE.update_trigger(
             trigger_id_int,
@@ -205,6 +223,7 @@ def _update_trigger_tool(
     )
     return {
         "trigger_id": record.id,
+        "user_message": _confirmation(record),
         "status": record.status,
         "next_trigger": record.next_trigger,
         "start_time": record.start_time,

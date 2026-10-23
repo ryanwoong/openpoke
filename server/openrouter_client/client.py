@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from ..execution_trace import traced
+
 from ..config import get_settings
 from ..logging_config import logger
 from ..model_settings import model_store
@@ -49,6 +51,7 @@ def _handle_response_error(exc: httpx.HTTPStatusError) -> None:
     raise OpenRouterError(f"OpenRouter request failed ({response.status_code}): {detail}") from exc
 
 
+@traced("model", lambda **kwargs: ("OpenRouter · " + (model_store.get() or kwargs["model"]), {"model": model_store.get() or kwargs["model"], "message_count": len(kwargs["messages"]), "tools": [tool.get("function", {}).get("name") for tool in (kwargs.get("tools") or [])]}))
 async def request_chat_completion(
     *,
     model: str,

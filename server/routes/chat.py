@@ -4,6 +4,8 @@ from fastapi.responses import JSONResponse
 from ..models import ChatHistoryClearResponse, ChatHistoryResponse, ChatRequest
 from ..services import get_conversation_log, get_trigger_service, handle_chat_request
 
+from ..execution_trace import trace_store
+
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
@@ -20,6 +22,11 @@ async def chat_send(
 def chat_history() -> ChatHistoryResponse:
     log = get_conversation_log()
     return ChatHistoryResponse(messages=log.to_chat_messages())
+
+
+@router.get("/execution")
+def execution_snapshot():
+    return {"spans": trace_store.snapshot()}
 
 
 @router.delete("/history", response_model=ChatHistoryClearResponse)
@@ -41,6 +48,8 @@ def clear_history() -> ChatHistoryClearResponse:
     # Clear stored triggers
     trigger_service = get_trigger_service()
     trigger_service.clear_all()
+
+    trace_store.clear()
 
     return ChatHistoryClearResponse()
 

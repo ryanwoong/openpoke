@@ -1,9 +1,12 @@
 """Simplified Execution Agent Runtime."""
 
+import asyncio
 import inspect
 import json
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
+
+from ...execution_trace import traced
 
 from .agent import ExecutionAgent
 from .tools import get_tool_schemas, get_tool_registry
@@ -15,6 +18,7 @@ from ...logging_config import logger
 @dataclass
 class ExecutionResult:
     """Result from an execution agent."""
+
     agent_name: str
     success: bool
     response: str
@@ -40,6 +44,7 @@ class ExecutionAgentRuntime:
             raise ValueError("OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable.")
 
     # Main execution loop for running agent with LLM calls and tool execution
+    @traced("execution", lambda self, instructions: (self.agent.name, {"instructions": instructions, "access": ["Agent execution history", "Gmail connection status"]}))
     async def execute(self, instructions: str) -> ExecutionResult:
         """Execute the agent with given instructions."""
         try:
@@ -52,9 +57,7 @@ class ExecutionAgentRuntime:
             final_response: Optional[str] = None
 
             for iteration in range(self.MAX_TOOL_ITERATIONS):
-                logger.info(
-                    f"[{self.agent.name}] Requesting plan (iteration {iteration + 1})"
-                )
+                logger.info(f"[{self.agent.name}] Requesting plan (iteration {iteration + 1})")
                 response = await self._make_llm_call(system_prompt, messages, with_tools=True)
                 assistant_message = response.get("choices", [{}])[0].get("message", {})
 
@@ -87,9 +90,7 @@ class ExecutionAgentRuntime:
                         tool_message = {
                             "role": "tool",
                             "tool_call_id": call_id or "unknown_tool",
-                            "content": self._format_tool_result(
-                                tool_name or "<unknown>", False, failure, tool_args
-                            ),
+                            "content": self._format_tool_result(tool_name or "<unknown>", False, failure, tool_args),
                         }
                         messages.append(tool_message)
                         continue
@@ -107,11 +108,7 @@ class ExecutionAgentRuntime:
                         logger.warning(f"[{self.agent.name}] Tool {tool_name} failed: {error_detail}")
                         record_payload = error_detail
 
-                    self.agent.record_tool_execution(
-                        tool_name,
-                        self._safe_json_dump(tool_args),
-                        record_payload
-                    )
+                    self.agent.record_tool_execution(tool_name, self._safe_json_dump(tool_args), record_payload)
 
                     tool_message = {
                         "role": "tool",
@@ -128,12 +125,7 @@ class ExecutionAgentRuntime:
 
             self.agent.record_response(final_response)
 
-            return ExecutionResult(
-                agent_name=self.agent.name,
-                success=True,
-                response=final_response,
-                tools_executed=tools_executed
-            )
+            return ExecutionResult(agent_name=self.agent.name, success=True, response=final_response, tools_executed=tools_executed)
 
         except Exception as e:
             logger.error(f"[{self.agent.name}] Execution failed: {e}")
@@ -141,25 +133,14 @@ class ExecutionAgentRuntime:
             failure_text = f"Failed to complete task: {error_msg}"
             self.agent.record_response(f"Error: {error_msg}")
 
-            return ExecutionResult(
-                agent_name=self.agent.name,
-                success=False,
-                response=failure_text,
-                error=error_msg
-            )
+            return ExecutionResult(agent_name=self.agent.name, success=False, response=failure_text, error=error_msg)
 
     # Execute OpenRouter API call with system prompt, messages, and optional tool schemas
     async def _make_llm_call(self, system_prompt: str, messages: List[Dict], with_tools: bool) -> Dict:
         """Make an LLM call."""
         tools_to_send = self.tool_schemas if with_tools else None
         logger.info("[%s] Calling LLM, tools: %d", self.agent.name, len(tools_to_send or []))
-        return await request_chat_completion(
-            model=self.model,
-            messages=messages,
-            system=system_prompt,
-            api_key=self.api_key,
-            tools=tools_to_send
-        )
+        return await request_chat_completion(model=self.model, messages=messages, system=system_prompt, api_key=self.api_key, tools=tools_to_send)
 
     # Parse and validate tool calls from LLM response into structured format
     def _extract_tool_calls(self, raw_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -178,11 +159,13 @@ class ExecutionAgentRuntime:
                     args = {}
 
             if name:
-                tool_calls.append({
-                    "id": tool.get("id"),
-                    "name": name,
-                    "arguments": args,
-                })
+                tool_calls.append(
+                    {
+                        "id": tool.get("id"),
+                        "name": name,
+                        "arguments": args,
+                    }
+                )
 
         return tool_calls
 
@@ -221,6 +204,7 @@ class ExecutionAgentRuntime:
         return self._safe_json_dump(payload)
 
     # Execute tool function from registry with error handling and async support
+    @traced("tool", lambda self, tool_name, arguments: (tool_name, arguments))
     async def _execute_tool(self, tool_name: str, arguments: Dict) -> Tuple[bool, Any]:
         """Execute a tool. Returns (success, result)."""
         tool_func = self.tool_registry.get(tool_name)
@@ -228,7 +212,10 @@ class ExecutionAgentRuntime:
             return False, {"error": f"Unknown tool: {tool_name}"}
 
         try:
-            result = tool_func(**arguments)
+            if inspect.iscoroutinefunction(tool_func):
+                result = tool_func(**arguments)
+            else:
+                result = await asyncio.to_thread(tool_func, **arguments)
             if inspect.isawaitable(result):
                 result = await result
             return True, result

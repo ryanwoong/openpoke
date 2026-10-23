@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import SettingsModal, { useSettings, type GmailConnection } from "@/components/SettingsModal";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { useChatActivity } from "@/components/chat/useChatActivity";
 import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ErrorBanner } from "@/components/chat/ErrorBanner";
 import { useBackgroundAlerts } from "@/components/chat/useBackgroundAlerts";
@@ -33,9 +34,11 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const [pendingRequests, setPendingRequests] = useState<string[]>([]);
   const { spans: executionSpans, error: executionError } = useExecutionActivity(executionResetKey);
+  const { activities, beginActivity, removeActivity, clearActivity } = useChatActivity(executionSpans);
   const isWaitingForResponse = pendingRequests.length > 0 || hasActiveChatRequest(executionSpans);
+  const scrollItems = useMemo(() => [...messages, ...activities], [messages, activities]);
   const { scrollContainerRef, handleScroll } = useAutoScroll({
-    items: messages,
+    items: scrollItems,
     isWaiting: isWaitingForResponse,
     isVisible: activeView === "conversation",
   });
@@ -144,48 +147,53 @@ export default function Page() {
   const canSubmit = input.trim().length > 0;
   const inputPlaceholder = "Ask anything, or give me something to do…";
 
-  const sendMessage = useCallback(async (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+  const sendMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
 
-    setError(null);
-    const requestId = crypto.randomUUID();
-    setPendingRequests((previous) => [...previous, requestId]);
+      setError(null);
+      const requestId = crypto.randomUUID();
+      setPendingRequests((previous) => [...previous, requestId]);
+      beginActivity(requestId, trimmed, messages.filter((message) => message.role === "user" && message.text === trimmed).length + 1);
 
-    // Optimistically add the user message immediately
-    const userMessage: ChatBubble = {
-      id: `user-${requestId}`,
-      role: "user",
-      text: trimmed,
-    };
-    setMessages((prev) => {
-      const newMessages = [...prev, userMessage];
-      return newMessages;
-    });
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: [{ role: "user", content: trimmed }],
-          request_id: requestId,
-        }),
+      // Optimistically add the user message immediately
+      const userMessage: ChatBubble = {
+        id: `user-${requestId}`,
+        role: "user",
+        text: trimmed,
+      };
+      setMessages((prev) => {
+        const newMessages = [...prev, userMessage];
+        return newMessages;
       });
 
-      if (!(res.ok || res.status === 202)) {
-        const detail = await res.text();
-        throw new Error(detail || `Request failed (${res.status})`);
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: trimmed }],
+            request_id: requestId,
+          }),
+        });
+
+        if (!(res.ok || res.status === 202)) {
+          const detail = await res.text();
+          throw new Error(detail || `Request failed (${res.status})`);
+        }
+      } catch (err: any) {
+        console.error("Failed to send message", err);
+        setError(err?.message || "Failed to send message");
+        // Remove the optimistic message on error
+        setMessages((prev) => prev.filter((msg) => msg.id !== userMessage.id));
+        setPendingRequests((previous) => previous.filter((id) => id !== requestId));
+        removeActivity(requestId);
+        throw err instanceof Error ? err : new Error("Failed to send message");
       }
-    } catch (err: any) {
-      console.error("Failed to send message", err);
-      setError(err?.message || "Failed to send message");
-      // Remove the optimistic message on error
-      setMessages((prev) => prev.filter((msg) => msg.id !== userMessage.id));
-      setPendingRequests((previous) => previous.filter((id) => id !== requestId));
-      throw err instanceof Error ? err : new Error("Failed to send message");
-    }
-  }, []);
+    },
+    [beginActivity, messages, removeActivity],
+  );
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -207,12 +215,13 @@ export default function Page() {
 
   const clearError = useCallback(() => setError(null), [setError]);
   const handleDataCleared = useCallback(() => {
+    clearActivity();
     setExecutionResetKey((value) => value + 1);
     setMessages([]);
     setInput("");
     setError(null);
     setPendingRequests([]);
-  }, []);
+  }, [clearActivity]);
 
   return (
     <main className="chat-workspace">
@@ -234,6 +243,7 @@ export default function Page() {
         />
         <ChatMessages
           messages={messages}
+          activities={activities}
           isLoadingHistory={isLoadingHistory}
           isWaitingForResponse={isWaitingForResponse}
           scrollContainerRef={scrollContainerRef}

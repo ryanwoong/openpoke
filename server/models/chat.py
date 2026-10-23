@@ -27,6 +27,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     messages: List[ChatMessage] = Field(default_factory=list)
+    request_id: Optional[str] = Field(default=None, max_length=128)
     model: Optional[str] = None
     system: Optional[str] = None
     stream: bool = True

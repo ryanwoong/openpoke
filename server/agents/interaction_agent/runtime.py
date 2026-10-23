@@ -63,8 +63,8 @@ class InteractionAgentRuntime:
             raise ValueError("OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable.")
 
     # Main entry point for processing user messages through the LLM interaction loop
-    @traced("interaction", lambda self, user_message: ("Interaction agent", {"prompt": user_message, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]}))
-    async def execute(self, user_message: str) -> InteractionResult:
+    @traced("interaction", lambda self, user_message, request_id=None: ("Interaction agent", {"prompt": user_message, "request_id": request_id, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]}))
+    async def execute(self, user_message: str, request_id: Optional[str] = None) -> InteractionResult:
         """Handle a user-authored message."""
 
         try:

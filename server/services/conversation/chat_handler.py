@@ -1,4 +1,5 @@
 import asyncio
+from uuid import uuid4
 from typing import Optional, Union
 
 from fastapi import status
@@ -38,12 +39,14 @@ async def handle_chat_request(payload: ChatRequest) -> Union[PlainTextResponse, 
         logger.error("configuration error", extra={"error": str(ve)})
         return error_response(str(ve), status_code=status.HTTP_400_BAD_REQUEST)
 
+    request_id = payload.request_id or uuid4().hex
+
     async def _run_interaction() -> None:
         try:
-            await runtime.execute(user_message=user_content)
+            await runtime.execute(user_message=user_content, request_id=request_id)
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("chat task failed", extra={"error": str(exc)})
 
     asyncio.create_task(_run_interaction())
 
-    return PlainTextResponse("", status_code=status.HTTP_202_ACCEPTED)
+    return PlainTextResponse("", status_code=status.HTTP_202_ACCEPTED, headers={"X-Request-ID": request_id})

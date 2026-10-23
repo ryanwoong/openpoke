@@ -51,10 +51,23 @@
   gap: 14px;
   border-radius: 9px;
   padding: 14px 16px;
-  background: #e0e6db;
-  color: #244d3d;
+  color: #626e65;
   font-size: 14px;
   font-weight: 550;
+}
+.chat-sidebar nav {
+  display: grid;
+  gap: 6px;
+}
+.conversation-link[aria-current="page"] {
+  background: #e0e6db;
+  color: #244d3d;
+}
+.conversation-link:hover {
+  background: #e7e9e1;
+}
+.chat-main[hidden] {
+  display: none;
 }
 .conversation-link svg {
   width: 22px;

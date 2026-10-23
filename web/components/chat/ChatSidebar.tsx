@@ -1,6 +1,6 @@
 import { BrandMark } from "./BrandMark";
 
-export function ChatSidebar({ email, onOpenSettings }: { email: string; onOpenSettings: () => void }) {
+export function ChatSidebar({ email, onOpenSettings, activeView, onNavigate }: { email: string; onOpenSettings: () => void; activeView: "conversation" | "execution"; onNavigate: (view: "conversation" | "execution") => void }) {
   const name = email ? email.split("@")[0].replace(/[._-]/g, " ") : "Your profile";
 
   return (
@@ -21,7 +21,8 @@ export function ChatSidebar({ email, onOpenSettings }: { email: string; onOpenSe
           aria-label="Conversation"
           className="conversation-link"
           href="#conversation"
-          aria-current="page"
+          aria-current={activeView === "conversation" ? "page" : undefined}
+          onClick={() => onNavigate("conversation")}
         >
           <svg
             viewBox="0 0 24 24"
@@ -33,6 +34,38 @@ export function ChatSidebar({ email, onOpenSettings }: { email: string; onOpenSe
             <path d="M20.5 11.5a8.5 8.5 0 0 1-8.5 8.5H5l-3 2v-6a8.5 8.5 0 1 1 18.5-4.5Z" />
           </svg>
           <span>Conversation</span>
+        </a>
+        <a
+          aria-label="Execution"
+          className="conversation-link"
+          href="#execution"
+          aria-current={activeView === "execution" ? "page" : undefined}
+          onClick={() => onNavigate("execution")}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            aria-hidden="true"
+          >
+            <rect
+              x="3"
+              y="3"
+              width="7"
+              height="7"
+              rx="2"
+            />
+            <rect
+              x="14"
+              y="14"
+              width="7"
+              height="7"
+              rx="2"
+            />
+            <path d="M10 6.5h7.5V14m-3-3 3 3 3-3M6.5 10v7.5H14" />
+          </svg>
+          <span>Execution</span>
         </a>
       </nav>
       <button

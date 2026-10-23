@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from ...execution_trace import traced
+
 from .agent import build_system_prompt, prepare_message_with_history
 from .tools import ToolResult, get_tool_schemas, handle_tool_call
 from ...config import get_settings
@@ -58,12 +60,11 @@ class InteractionAgentRuntime:
         self.tool_schemas = get_tool_schemas()
 
         if not self.api_key:
-            raise ValueError(
-                "OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable."
-            )
+            raise ValueError("OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable.")
 
     # Main entry point for processing user messages through the LLM interaction loop
-    async def execute(self, user_message: str) -> InteractionResult:
+    @traced("interaction", lambda self, user_message, request_id=None: ("Interaction agent", {"prompt": user_message, "request_id": request_id, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]}))
+    async def execute(self, user_message: str, request_id: Optional[str] = None) -> InteractionResult:
         """Handle a user-authored message."""
 
         try:
@@ -71,9 +72,7 @@ class InteractionAgentRuntime:
             self.conversation_log.record_user_message(user_message)
 
             system_prompt = build_system_prompt()
-            messages = prepare_message_with_history(
-                user_message, transcript_before, message_type="user"
-            )
+            messages = prepare_message_with_history(user_message, transcript_before, message_type="user")
 
             logger.info("Processing user message through interaction agent")
             summary = await self._run_interaction_loop(system_prompt, messages)
@@ -98,6 +97,7 @@ class InteractionAgentRuntime:
             )
 
     # Handle incoming messages from execution agents and generate appropriate responses
+    @traced("interaction", lambda self, agent_message: ("Interaction agent · results", {"agent_message": agent_message, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]}))
     async def handle_agent_message(self, agent_message: str) -> InteractionResult:
         """Process a status update emitted by an execution agent."""
 
@@ -106,9 +106,7 @@ class InteractionAgentRuntime:
             self.conversation_log.record_agent_message(agent_message)
 
             system_prompt = build_system_prompt()
-            messages = prepare_message_with_history(
-                agent_message, transcript_before, message_type="agent"
-            )
+            messages = prepare_message_with_history(agent_message, transcript_before, message_type="agent")
 
             logger.info("Processing execution agent results")
             summary = await self._run_interaction_loop(system_prompt, messages)
@@ -263,16 +261,12 @@ class InteractionAgentRuntime:
                 )
                 continue
 
-            parsed.append(
-                _ToolCall(identifier=raw.get("id"), name=name, arguments=arguments)
-            )
+            parsed.append(_ToolCall(identifier=raw.get("id"), name=name, arguments=arguments))
 
         return parsed
 
     # Parse and validate tool arguments from various formats (dict, JSON string, etc.)
-    def _parse_tool_arguments(
-        self, raw_arguments: Any
-    ) -> tuple[Dict[str, Any], Optional[str]]:
+    def _parse_tool_arguments(self, raw_arguments: Any) -> tuple[Dict[str, Any], Optional[str]]:
         """Convert tool arguments into a dictionary, reporting errors."""
 
         if raw_arguments is None:
@@ -295,6 +289,7 @@ class InteractionAgentRuntime:
         return {}, f"unsupported argument type: {type(raw_arguments).__name__}"
 
     # Execute tool calls with error handling and logging, returning standardized results
+    @traced("tool", lambda self, tool_call: (tool_call.name, tool_call.arguments))
     def _execute_tool(self, tool_call: _ToolCall) -> ToolResult:
         """Execute a tool call and convert low-level errors into structured results."""
 
@@ -345,11 +340,7 @@ class InteractionAgentRuntime:
         payload: Dict[str, Any] = {
             "tool": tool_call.name,
             "status": "success" if result.success else "error",
-            "arguments": {
-                key: value
-                for key, value in tool_call.arguments.items()
-                if key != "__invalid_arguments__"
-            },
+            "arguments": {key: value for key, value in tool_call.arguments.items() if key != "__invalid_arguments__"},
         }
 
         if result.payload is not None:
@@ -378,11 +369,7 @@ class InteractionAgentRuntime:
     ) -> None:
         """Emit structured logs for tool lifecycle events."""
 
-        cleaned_args = {
-            key: value
-            for key, value in tool_call.arguments.items()
-            if key != "__invalid_arguments__"
-        }
+        cleaned_args = {key: value for key, value in tool_call.arguments.items() if key != "__invalid_arguments__"}
 
         log_payload: Dict[str, Any] = {
             "tool": tool_call.name,

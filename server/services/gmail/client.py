@@ -13,8 +13,9 @@ from fastapi.responses import JSONResponse
 from ...config import Settings, get_settings
 from ...logging_config import logger
 from ...models import GmailConnectPayload, GmailDisconnectPayload, GmailStatusPayload
-from ...utils import error_response
+from ...execution_trace import traced
 
+from ...utils import error_response
 
 _CLIENT_LOCK = threading.Lock()
 _CLIENT: Optional[Any] = None
@@ -64,6 +65,7 @@ def get_integration_context() -> str:
 
 def _gmail_import_client():
     from composio import Composio  # type: ignore
+
     return Composio
 
 
@@ -82,9 +84,7 @@ def _get_composio_client(settings: Optional[Settings] = None):
                 _CLIENT = Composio(api_key=api_key) if api_key else Composio()
             except TypeError as exc:
                 if api_key:
-                    raise RuntimeError(
-                        "Installed Composio SDK does not accept the api_key argument; upgrade the SDK or remove COMPOSIO_API_KEY."
-                    ) from exc
+                    raise RuntimeError("Installed Composio SDK does not accept the api_key argument; upgrade the SDK or remove COMPOSIO_API_KEY.") from exc
                 _CLIENT = Composio()
     return _CLIENT
 
@@ -279,9 +279,7 @@ def fetch_status(payload: GmailStatusPayload) -> JSONResponse:
                     account = None
         if account is None and user_id:
             try:
-                items = client.connected_accounts.list(
-                    user_ids=[user_id], toolkit_slugs=["GMAIL"], statuses=["ACTIVE"]
-                )
+                items = client.connected_accounts.list(user_ids=[user_id], toolkit_slugs=["GMAIL"], statuses=["ACTIVE"])
                 data = getattr(items, "data", None)
                 if data is None and isinstance(items, dict):
                     data = items.get("data")
@@ -488,6 +486,7 @@ def _normalize_tool_response(result: Any) -> Dict[str, Any]:
 
 
 # Execute Gmail operations through Composio SDK with error handling
+@traced("access", lambda tool_name, composio_user_id, **kwargs: ("Gmail · " + tool_name, kwargs.get("arguments", {})))
 def execute_gmail_tool(
     tool_name: str,
     composio_user_id: str,

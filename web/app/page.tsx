@@ -10,12 +10,17 @@ import { ErrorBanner } from "@/components/chat/ErrorBanner";
 import { useAutoScroll } from "@/components/chat/useAutoScroll";
 import type { ChatBubble } from "@/components/chat/types";
 
+import { useExecutionActivity } from "@/components/execution/useExecutionActivity";
+import { ExecutionMonitor } from "@/components/execution/ExecutionMonitor";
+
 import { toBubbles } from "@/lib/chatHistory";
 
 const POLL_INTERVAL_MS = 1500;
 
 export default function Page() {
   const { settings, setSettings } = useSettings();
+  const [activeView, setActiveView] = useState<"conversation" | "execution">("conversation");
+  const [executionResetKey, setExecutionResetKey] = useState(0);
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -24,6 +29,7 @@ export default function Page() {
   const [messages, setMessages] = useState<ChatBubble[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
+  const { spans: executionSpans, error: executionError } = useExecutionActivity(executionResetKey);
   const { scrollContainerRef, handleScroll } = useAutoScroll({
     items: messages,
     isWaiting: isWaitingForResponse,
@@ -92,6 +98,13 @@ export default function Page() {
 
     return () => window.clearInterval(intervalId);
   }, [loadHistory]);
+
+  useEffect(() => {
+    const syncView = () => setActiveView(window.location.hash === "#execution" ? "execution" : "conversation");
+    syncView();
+    window.addEventListener("hashchange", syncView);
+    return () => window.removeEventListener("hashchange", syncView);
+  }, []);
 
   const canSubmit = input.trim().length > 0;
   const inputPlaceholder = "Ask anything, or give me something to do…";
@@ -202,6 +215,7 @@ export default function Page() {
 
   const clearError = useCallback(() => setError(null), [setError]);
   const handleDataCleared = useCallback(() => {
+    setExecutionResetKey((value) => value + 1);
     setMessages([]);
     setInput("");
     setError(null);
@@ -213,11 +227,14 @@ export default function Page() {
       <ChatSidebar
         email={gmail.connected ? gmail.email : ""}
         onOpenSettings={openSettings}
+        activeView={activeView}
+        onNavigate={setActiveView}
       />
       <section
         id="conversation"
         className="chat-main"
         aria-label="Your assistant"
+        hidden={activeView !== "conversation"}
       >
         <ChatHeader isWaitingForResponse={isWaitingForResponse} />
         <ChatMessages
@@ -245,6 +262,18 @@ export default function Page() {
             onOpenGmail={openGmail}
           />
         </div>
+      </section>
+      <section
+        id="execution"
+        className="chat-main"
+        aria-label="Execution workspace"
+        hidden={activeView !== "execution"}
+      >
+        <ExecutionMonitor
+          resetKey={executionResetKey}
+          spans={executionSpans}
+          error={executionError}
+        />
       </section>
       <SettingsModal
         open={open}

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test components/chat/*.test.tsx"
+    "test": "tsx --test components/chat/*.test.tsx components/execution/*.test.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",

@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import List, Optional, TYPE_CHECKING
 
 from ....config import get_settings
+from ....model_settings import completion_target
+from ....openrouter_client.context import ContextBudgetError, estimate_tokens, input_budget
 from ....logging_config import logger
 from ....openrouter_client import OpenRouterError, request_chat_completion
 from .prompt_builder import SummaryPrompt, build_summarization_prompt
@@ -45,6 +47,8 @@ async def _call_openrouter(prompt: SummaryPrompt, model: str, api_key: Optional[
             if content:
                 return content
             raise OpenRouterError("OpenRouter response missing content")
+        except ContextBudgetError:
+            raise
         except OpenRouterError as exc:
             last_error = exc
             if attempt == 0:
@@ -78,6 +82,7 @@ async def summarize_conversation() -> bool:
     conversation_log = _resolve_conversation_log()
     working_memory_log = get_working_memory_log()
 
+    generation = working_memory_log.generation
     entries = _collect_entries(conversation_log)
     state = working_memory_log.load_summary_state()
 
@@ -88,10 +93,17 @@ async def summarize_conversation() -> bool:
         return False
 
     unsummarized_entries = [entry for entry in entries if entry.index > state.last_index]
-    if len(unsummarized_entries) < threshold + tail_size:
+    target = completion_target(settings.summarizer_model)
+    window = target.context_length or settings.context_window_tokens
+    reserve = min(settings.context_output_tokens, window // 4)
+    pressure = estimate_tokens([state.summary_text, [entry.payload for entry in unsummarized_entries]]) > input_budget(window, reserve) // 2
+    if len(unsummarized_entries) < threshold + tail_size and not pressure:
         return False
-
-    batch = unsummarized_entries[:threshold]
+    if not unsummarized_entries:
+        return False
+    keep = min(tail_size, max(0, len(unsummarized_entries) - 1))
+    eligible = unsummarized_entries[:-keep] if keep else unsummarized_entries
+    batch = eligible[:threshold]
     cutoff_index = batch[-1].index
 
     prompt = build_summarization_prompt(state.summary_text, batch)
@@ -120,7 +132,9 @@ async def summarize_conversation() -> bool:
         unsummarized_entries=remaining_entries,
     )
 
-    working_memory_log.write_summary_state(new_state)
+    if not working_memory_log.write_summary_state(new_state, expected_generation=generation):
+        logger.info("Skipped stale working-memory summary after conversation data was cleared")
+        return False
 
     logger.info(
         "conversation summarization completed",

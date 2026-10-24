@@ -341,6 +341,17 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(peak, 3)
         self.assertGreater(peak, 1)
 
+    def test_cleared_working_memory_rejects_a_stale_summary_write(self):
+        from server.services.conversation.summarization.working_memory_log import WorkingMemoryLog
+
+        memory = WorkingMemoryLog(self.compactor.directory.parent / "memory.log")
+        generation = memory.generation
+        memory.clear()
+        self.assertFalse(memory.write_summary_state(SummaryState(summary_text="Old private memory", last_index=10), expected_generation=generation))
+        self.assertEqual(memory.load_summary_state().summary_text, "")
+        self.assertTrue(memory.write_summary_state(SummaryState(summary_text="New memory"), expected_generation=memory.generation))
+        self.assertEqual(memory.load_summary_state().summary_text, "New memory")
+
     def test_clear_history_clears_context_artifacts_too(self):
         from server.routes.chat import clear_history
 
@@ -366,6 +377,32 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context_overflow(401, "context exceeded"), (False, None))
         self.assertEqual(context_overflow(400, "Invalid tool_call_id"), (False, None))
         self.assertEqual(input_budget(32768, 4096), 24576)
+
+    async def test_token_pressure_triggers_working_memory_before_message_threshold(self):
+        settings = SimpleNamespace(
+            summarization_enabled=True,
+            conversation_summary_threshold=100,
+            conversation_summary_tail_size=10,
+            summarizer_model="test",
+            context_window_tokens=8192,
+            context_output_tokens=1024,
+            openrouter_api_key=None,
+        )
+        entries = [LogEntry(tag="poke_reply", payload="Large prior message " * 2500, index=0), LogEntry(tag="user_message", payload="Latest question", index=1)]
+        memory = Mock(load_summary_state=Mock(return_value=SummaryState.empty()))
+        target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 8192)
+        with patch.object(summarizer, "get_settings", return_value=settings), patch.object(summarizer, "completion_target", return_value=target), patch.object(
+            summarizer, "_resolve_conversation_log", return_value=Mock()
+        ), patch.object(summarizer, "_collect_entries", return_value=entries), patch.object(
+            summarizer, "get_working_memory_log", return_value=memory
+        ), patch.object(
+            summarizer, "_call_openrouter", AsyncMock(return_value="Compact memory")
+        ):
+            self.assertTrue(await summarizer.summarize_conversation())
+        state = memory.write_summary_state.call_args.args[0]
+        self.assertEqual(state.summary_text, "Compact memory")
+        self.assertEqual(state.unsummarized_entries[-1].payload, "Latest question")
+        self.assertEqual(state.last_index, 0)
 
 
 if __name__ == "__main__":

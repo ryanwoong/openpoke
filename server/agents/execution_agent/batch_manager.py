@@ -12,6 +12,7 @@ from .runtime import ExecutionAgentRuntime, ExecutionResult
 from ...logging_config import logger
 from ...config import get_settings
 from ...execution_trace import current_run_id
+from ...services.conversation.request_context import task_failure_message
 
 
 @dataclass
@@ -62,10 +63,7 @@ class ExecutionBatchManager:
         try:
             logger.info(f"[{agent_name}] Execution started")
             runtime = ExecutionAgentRuntime(agent_name=agent_name)
-            result = await asyncio.wait_for(
-                runtime.execute(instructions),
-                timeout=self.timeout_seconds,
-            )
+            result = await asyncio.wait_for(runtime.execute(instructions), timeout=self.timeout_seconds)
             status = "SUCCESS" if result.success else "FAILED"
             logger.info(f"[{agent_name}] Execution finished: {status}")
         except asyncio.TimeoutError:
@@ -90,7 +88,7 @@ class ExecutionBatchManager:
         result.instructions = instructions
         if not result.success and not result.user_response:
             detail = result.error or result.response or "The task could not be completed."
-            result.user_response = f"I couldn't finish this task: {instructions}\n\n{detail}. I don't have a verified result for this request."
+            result.user_response = task_failure_message(detail)
         await self._complete_execution(batch_id, result, agent_name)
         return result
 
@@ -127,6 +125,7 @@ class ExecutionBatchManager:
 
         dispatch_payload: Optional[str] = None
         verified_replies: List[str] = []
+        failure_replies: List[str] = []
 
         async with self._batch_lock:
             state = self._batch_states.get(batch_id)
@@ -138,17 +137,27 @@ class ExecutionBatchManager:
             state.pending -= 1
 
             if state.pending == 0:
-                verified_replies = [entry.user_response for entry in state.results if entry.user_response]
-                dispatch_payload = self._format_batch_payload([entry for entry in state.results if not entry.user_response])
+                failed = [entry for entry in state.results if not entry.success]
+                if failed:
+                    verified_replies = [entry.user_response for entry in state.results if entry.user_response and entry.success]
+                    failure_replies.append(
+                        failed[0].user_response
+                        or "I couldn't complete all parts of this task, so I don't have a verified complete answer. Please try a smaller request."
+                    )
+                else:
+                    verified_replies = [entry.user_response for entry in state.results if entry.user_response]
+                    dispatch_payload = self._format_batch_payload([entry for entry in state.results if not entry.user_response])
                 agent_names = [entry.agent_name for entry in state.results]
                 logger.info(f"Execution batch completed: {', '.join(agent_names)}")
                 self._batch_states.pop(batch_id, None)
 
-        if verified_replies:
+        if verified_replies or failure_replies:
             from ...services.conversation import get_conversation_log
 
             for reply in verified_replies:
                 get_conversation_log().record_reply(reply)
+            for reply in failure_replies:
+                get_conversation_log().record_task_failure(reply)
         if dispatch_payload:
             await self._dispatch_to_interaction_agent(dispatch_payload)
 
@@ -194,10 +203,4 @@ class ExecutionBatchManager:
         from ..interaction_agent.runtime import InteractionAgentRuntime
 
         runtime = InteractionAgentRuntime()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(runtime.handle_agent_message(payload))
-            return
-
-        loop.create_task(runtime.handle_agent_message(payload))
+        await runtime.handle_agent_message(payload)

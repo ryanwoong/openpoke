@@ -32,6 +32,12 @@ class MemoryConversation:
     def record_reply(self, content):
         self.entries.append(("poke_reply", "", content))
 
+    def record_task_failure(self, content):
+        self.entries.append(("task_failure", "", content))
+
+    def record_scheduled_update(self, content):
+        self.entries.append(("scheduled_update", "", content))
+
     def iter_entries(self):
         return iter(self.entries)
 
@@ -47,7 +53,10 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
             patch.object(scheduling, "get_timezone_store", return_value=Mock(get_timezone=Mock(return_value="America/Edmonton"))),
             patch("server.services.trigger_scheduler.get_trigger_service", return_value=self.service),
             patch("server.services.trigger_scheduler.get_conversation_log", return_value=self.log),
-            patch("server.agents.execution_agent.runtime.get_settings", return_value=SimpleNamespace(openrouter_api_key="test", execution_agent_model="user/selected")),
+            patch(
+                "server.agents.execution_agent.runtime.get_settings",
+                return_value=SimpleNamespace(openrouter_api_key="test", execution_agent_model="user/selected"),
+            ),
             patch("server.agents.execution_agent.agent.get_execution_agent_logs", return_value=Mock()),
             patch("server.services.execution.get_execution_agent_logs", return_value=Mock()),
             patch("server.services.execution.get_agent_roster", return_value=Mock()),
@@ -77,7 +86,9 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("MDT", result.response)
         self.assertIn("Reminder scheduled", result.response)
         scheduler = TriggerScheduler()
-        with patch.object(scheduler, "_format_instructions", side_effect=AssertionError("No model needed")), patch("server.services.trigger_scheduler._utc_now", return_value=utc_now() + timedelta(minutes=4)):
+        with patch.object(scheduler, "_format_instructions", side_effect=AssertionError("No model needed")), patch(
+            "server.services.trigger_scheduler._utc_now", return_value=utc_now() + timedelta(minutes=4)
+        ):
             await scheduler._poll_once()
             await asyncio.gather(*[task for task in asyncio.all_tasks() if task.get_name() == f"trigger-{record.id}"])
         self.assertEqual(self.log.entries[-1][2], "Take a desk break")
@@ -96,7 +107,9 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_storage_failure_is_reported_without_false_confirmation(self):
         responses = [completion("scheduleTask", {"kind": "reminder", "message": "Break", "start_time": self.start}), completion()]
-        with patch.object(self.service, "create_trigger", side_effect=RuntimeError("Database unavailable")), patch.object(ExecutionAgentRuntime, "_make_llm_call", AsyncMock(side_effect=responses)):
+        with patch.object(self.service, "create_trigger", side_effect=RuntimeError("Database unavailable")), patch.object(
+            ExecutionAgentRuntime, "_make_llm_call", AsyncMock(side_effect=responses)
+        ):
             result = await self.runtime.execute("remind me in 3 minutes")
         self.assertFalse(result.success)
         self.assertEqual(result.response, "Nothing was scheduled. Database unavailable")
@@ -154,7 +167,9 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
     async def test_gmail_failure_is_visible_and_not_reported_as_sent(self):
         action = {"kind": "email", "recipient_email": "test@example.com", "subject": "Hello", "body": "Body", "approved_at": self.start}
         record = self.service.create_trigger(agent_name=scheduling.AGENT_NAME, payload=scheduling.PAYLOAD_PREFIX + json.dumps(action), start_time=self.start)
-        with patch("server.services.trigger_scheduler.get_active_gmail_user_id", return_value="user"), patch("server.services.trigger_scheduler.execute_gmail_tool", return_value={"successful": False, "error": "Gmail unavailable"}) as gmail:
+        with patch("server.services.trigger_scheduler.get_active_gmail_user_id", return_value="user"), patch(
+            "server.services.trigger_scheduler.execute_gmail_tool", return_value={"successful": False, "error": "Gmail unavailable"}
+        ) as gmail:
             await TriggerScheduler()._execute_trigger(record)
         gmail.assert_called_once()
         self.assertIn("Gmail unavailable", self.records()[0].last_error)
@@ -164,7 +179,9 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
         manager = ExecutionBatchManager()
         batch = await manager._register_pending_execution("test", "schedule", "request")
         result = ExecutionResult(agent_name="test", success=True, response="Saved", user_response="Verified schedule")
-        with patch("server.services.conversation.get_conversation_log", return_value=self.log), patch.object(manager, "_dispatch_to_interaction_agent", AsyncMock()) as dispatch:
+        with patch("server.services.conversation.get_conversation_log", return_value=self.log), patch.object(
+            manager, "_dispatch_to_interaction_agent", AsyncMock()
+        ) as dispatch:
             await manager._complete_execution(batch, result, "test")
         dispatch.assert_not_awaited()
         self.assertEqual(self.log.entries[-1][2], "Verified schedule")
@@ -233,7 +250,13 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.records(), [])
 
     def test_scheduling_routes_common_phrasings_without_hijacking_explanations(self):
-        for request in ("could you remind me to wash my hand at 3pm?", "set a timer for 3 minutes", "schedule an email tomorrow", "send me an email in three hours", "email test@example.com at 3pm"):
+        for request in (
+            "could you remind me to wash my hand at 3pm?",
+            "set a timer for 3 minutes",
+            "schedule an email tomorrow",
+            "send me an email in three hours",
+            "email test@example.com at 3pm",
+        ):
             self.assertTrue(scheduling.is_scheduling_request(request), request)
         for request in ("how do I set a reminder?", "don't remind me", "search my email", "what is a timer?"):
             self.assertFalse(scheduling.is_scheduling_request(request), request)

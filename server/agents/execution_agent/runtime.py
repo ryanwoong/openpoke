@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ...execution_trace import traced
+from ...services.conversation.request_context import current_request
 
 from .agent import ExecutionAgent
 from .tools.scheduling import SCHEMA as SCHEDULING_SCHEMA
@@ -59,7 +60,7 @@ class ExecutionAgentRuntime:
         """Execute the agent with given instructions."""
         try:
             # Build system prompt with history
-            system_prompt = self.agent.build_system_prompt_with_history()
+            system_prompt = self.agent.build_system_prompt() if current_request.get() else self.agent.build_system_prompt_with_history()
 
             # Start conversation with the instruction
             messages = [{"role": "user", "content": instructions}]

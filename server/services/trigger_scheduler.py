@@ -12,6 +12,7 @@ from ..logging_config import logger
 from .triggers import TriggerRecord, get_trigger_service
 from .scheduling import PAYLOAD_PREFIX, decode_action
 from .conversation import get_conversation_log
+from .conversation.log import scheduled_delivery
 from .gmail import execute_gmail_tool, get_active_gmail_user_id
 
 UTC = timezone.utc
@@ -80,6 +81,7 @@ class TriggerScheduler:
             asyncio.create_task(self._execute_trigger(trigger), name=f"trigger-{trigger.id}")
 
     async def _execute_trigger(self, trigger: TriggerRecord) -> None:
+        delivery_token = scheduled_delivery.set(True)
         try:
             current = self._service.get_trigger(trigger.id)
             if current is None or current != trigger or current.status != "active" or not current.next_trigger:
@@ -121,10 +123,11 @@ class TriggerScheduler:
             )
         finally:
             self._in_flight.discard(trigger.id)
+            scheduled_delivery.reset(delivery_token)
 
     async def _deliver_action(self, action):
         if action["kind"] == "reminder":
-            get_conversation_log().record_reply(action["message"])
+            get_conversation_log().record_scheduled_update(action["message"])
             return
         if not action.get("approved_at"):
             raise ValueError("Scheduled email has not been approved; nothing was sent")
@@ -144,7 +147,7 @@ class TriggerScheduler:
             raise ValueError("Gmail did not return a draft ID; scheduled email was not sent")
         result = await asyncio.to_thread(execute_gmail_tool, "GMAIL_SEND_DRAFT", user_id, arguments={"draft_id": draft_id})
         self._check_gmail_result(result)
-        get_conversation_log().record_reply(f"Scheduled email sent to {action['recipient_email']}: {action['subject']}")
+        get_conversation_log().record_scheduled_update(f"Scheduled email sent to {action['recipient_email']}: {action['subject']}")
 
     @staticmethod
     def _check_gmail_result(result):
@@ -168,7 +171,7 @@ class TriggerScheduler:
             },
         )
         if trigger.payload.startswith(PAYLOAD_PREFIX):
-            get_conversation_log().record_reply(f"Scheduled task failed: {error}")
+            get_conversation_log().record_scheduled_update(f"Scheduled task failed: {error}")
         if trigger.recurrence_rule:
             self._service.schedule_next_occurrence(trigger, fired_at=fired_at)
         else:

@@ -159,7 +159,7 @@
   scrollbar-color: #d6d9d0 transparent;
 }
 .conversation-content {
-  --message-time-gutter: 76px;
+  --message-time-gutter: 52px;
   width: min(100%, 860px);
   margin: 0 auto;
   padding: 42px 30px 24px;
@@ -207,7 +207,7 @@
   position: absolute;
   top: 50%;
   left: 0;
-  width: calc(var(--message-time-gutter) - 12px);
+  width: calc(var(--message-time-gutter) - 8px);
   color: var(--chat-muted);
   font-size: 11px;
   line-height: 16px;
@@ -509,7 +509,7 @@
     font-size: 11px;
   }
   .conversation-content {
-    --message-time-gutter: 64px;
+    --message-time-gutter: 52px;
     padding: 25px 16px 12px;
   }
   .chat-message {

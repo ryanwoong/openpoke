@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from server.config import get_settings
@@ -30,6 +32,7 @@ from .system_prompt import get_system_prompt
 
 # Constants
 MAX_LLM_ITERATIONS = 8
+MAX_SEARCH_PAGES = 10
 ERROR_GMAIL_NOT_CONNECTED = "Gmail not connected. Please connect Gmail in settings first."
 ERROR_OPENROUTER_NOT_CONFIGURED = "OpenRouter API key not configured. Set OPENROUTER_API_KEY."
 ERROR_EMPTY_QUERY = "search_query must not be empty"
@@ -38,7 +41,6 @@ ERROR_MESSAGE_IDS_REQUIRED = "message_ids parameter is required"
 ERROR_MESSAGE_IDS_MUST_BE_LIST = "message_ids must be provided as a list"
 ERROR_TOOL_ARGUMENTS_INVALID = "Tool arguments must be an object"
 ERROR_ITERATION_LIMIT = "Email search orchestrator exceeded iteration limit"
-
 
 
 _COMPLETION_TOOL_SCHEMA = get_completion_schema()
@@ -50,7 +52,7 @@ _EMAIL_CLEANER = EmailTextCleaner(max_url_length=40)
 def _create_error_response(call_id: str, query: Optional[str], error: str) -> Tuple[str, str]:
     """Create standardized error response for tool calls."""
     result = EmailSearchToolResult(status="error", query=query, error=error)
-    return (call_id, _safe_json_dumps(result.model_dump(exclude_none=True)))
+    return (call_id, _safe_json_dumps(result.model_dump(mode="json", exclude_none=True)))
 
 
 # Create standardized success response for tool calls
@@ -93,23 +95,30 @@ def build_registry(agent_name: str) -> Dict[str, Callable[..., Any]]:  # noqa: A
 async def task_email_search(search_query: str) -> Any:
     """Run an agentic Gmail search for the provided query."""
     logger.info(f"[EMAIL_SEARCH] Starting search for: '{search_query}'")
-    
+
     # Validate inputs
     cleaned_query = (search_query or "").strip()
     if error := _validate_search_query(cleaned_query):
         logger.error(f"[EMAIL_SEARCH] Invalid query: {error}")
         return {"error": error}
-    
+
     composio_user_id = _validate_gmail_connection()
     if not composio_user_id:
         logger.error(f"[EMAIL_SEARCH] Gmail not connected")
         return {"error": ERROR_GMAIL_NOT_CONNECTED}
-    
+
+    if re.search(r"(?:^|\s)(?:after|before|newer_than|older_than|from|to|subject|label|in|is|has):", cleaned_query, re.IGNORECASE):
+        emails = {}
+        result = await _perform_search(arguments={"query": cleaned_query, "max_results": 100}, queries=[], emails=emails, composio_user_id=composio_user_id)
+        if result.status == "error":
+            return {"error": result.error}
+        return [email.model_dump(mode="json", exclude_none=True) for email in result.messages]
+
     api_key, model_or_error = _validate_openrouter_config()
     if not api_key:
         logger.error(f"[EMAIL_SEARCH] OpenRouter not configured: {model_or_error}")
         return {"error": model_or_error}
-    
+
     try:
         result = await _run_email_search(
             search_query=cleaned_query,
@@ -133,20 +142,18 @@ async def _run_email_search(
     api_key: str,
 ) -> List[Dict[str, Any]]:
     """Execute the main email search orchestration loop."""
-    messages: List[Dict[str, Any]] = [
-        {"role": "user", "content": _render_user_message(search_query)}
-    ]
+    messages: List[Dict[str, Any]] = [{"role": "user", "content": _render_user_message(search_query)}]
     queries: List[str] = []
     emails: Dict[str, GmailSearchEmail] = {}
     selected_ids: Optional[List[str]] = None
     search_errors: List[str] = []
-    
+
     for iteration in range(MAX_LLM_ITERATIONS):
         logger.debug(
             "[task_email_search] LLM iteration",
             extra={"iteration": iteration + 1, "tool": TASK_TOOL_NAME},
         )
-        
+
         # Get LLM response
         response = await request_chat_completion(
             model=model,
@@ -155,11 +162,11 @@ async def _run_email_search(
             api_key=api_key,
             tools=[GMAIL_FETCH_EMAILS_SCHEMA, _COMPLETION_TOOL_SCHEMA],
         )
-        
+
         # Process assistant response
         assistant = _extract_assistant_message(response)
         tool_calls = assistant.get("tool_calls") or []
-        
+
         # Add assistant message to conversation
         assistant_entry = {
             "role": "assistant",
@@ -168,7 +175,7 @@ async def _run_email_search(
         if tool_calls:
             assistant_entry["tool_calls"] = tool_calls
         messages.append(assistant_entry)
-        
+
         # Handle case where LLM doesn't make tool calls
         if not tool_calls:
             if emails:
@@ -176,7 +183,7 @@ async def _run_email_search(
             logger.info(f"[EMAIL_SEARCH] LLM completed search - no more queries needed")
             selected_ids = []
             break
-        
+
         # Execute tool calls and process responses
         tool_responses, completed_ids = await _execute_tool_calls(
             tool_calls=tool_calls,
@@ -184,18 +191,20 @@ async def _run_email_search(
             emails=emails,
             composio_user_id=composio_user_id,
         )
-        
+
         # Add tool responses to conversation
         for call_id, content in tool_responses:
             tool_result = json.loads(content)
             if tool_result.get("status") == "error":
                 search_errors.append(tool_result.get("error") or "Gmail search failed")
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": content,
-            })
-        
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": content,
+                }
+            )
+
         # Check if search is complete
         if completed_ids is not None:
             logger.info(f"[EMAIL_SEARCH] Search completed - selected {len(completed_ids)} emails")
@@ -204,18 +213,16 @@ async def _run_email_search(
     else:
         logger.error(f"[EMAIL_SEARCH] {ERROR_ITERATION_LIMIT}")
         raise RuntimeError(ERROR_ITERATION_LIMIT)
-    
+
     if not queries:
         detail = search_errors[-1] if search_errors else "The model finished without running a Gmail search."
         raise RuntimeError(f"No Gmail search completed successfully. {detail}")
-    if search_errors and not selected_ids:
-        raise RuntimeError(f"Email search was incomplete; cannot confirm there were no matches. {search_errors[-1]}")
+    if search_errors:
+        raise RuntimeError(f"Email search was incomplete; cannot confirm a complete result. {search_errors[-1]}")
     final_result = _build_response(queries, emails, selected_ids or [])
     unique_queries = list(dict.fromkeys(queries))
     logger.info(f"[EMAIL_SEARCH] Completed - {len(unique_queries)} queries executed, {len(final_result)} emails selected")
     return final_result
-
-
 
 
 # Create user message for the LLM with search context
@@ -261,21 +268,21 @@ async def _execute_tool_calls(
             # Handle Gmail search tool
             search_query = arguments.get("query", "<unknown>")
             logger.info(f"[SEARCH_QUERY] LLM generated query: '{search_query}'")
-            
+
             result_model = await _perform_search(
                 arguments=arguments,
                 queries=queries,
                 emails=emails,
                 composio_user_id=composio_user_id,
             )
-            response_data = result_model.model_dump(exclude_none=True)
-            
+            response_data = result_model.model_dump(mode="json", exclude_none=True)
+
             if result_model.status == "success":
                 count = result_model.result_count or 0
                 logger.info(f"[SEARCH_RESULT] Query '{search_query}' → {count} emails found")
             else:
                 logger.warning(f"[SEARCH_RESULT] Query '{search_query}' → FAILED: {result_model.error}")
-            
+
             responses.append(_create_success_response(call_id, response_data))
 
         else:
@@ -306,7 +313,7 @@ async def _perform_search(
 
     # Use LLM-provided max_results or default to 10
     max_results = arguments.get("max_results", 10)
-    
+
     composio_arguments = {
         "query": query,
         "max_results": max_results,  # Use LLM-provided value or default 10
@@ -322,42 +329,37 @@ async def _perform_search(
         description=f"{TASK_TOOL_NAME} search | query={query} | max_results={max_results}",
     )
 
+    collected = {}
+    page_token = None
+    seen_tokens = set()
     try:
-        raw_result = execute_gmail_tool(
-            "GMAIL_FETCH_EMAILS",
-            composio_user_id,
-            arguments=composio_arguments,
-        )
+        for _ in range(MAX_SEARCH_PAGES):
+            page_arguments = dict(composio_arguments)
+            if page_token:
+                page_arguments["page_token"] = page_token
+            raw_result = await asyncio.to_thread(execute_gmail_tool, "GMAIL_FETCH_EMAILS", composio_user_id, arguments=page_arguments)
+            if raw_result.get("successful") is False or raw_result.get("success") is False or raw_result.get("error"):
+                raise RuntimeError(f"Gmail API search failed: {raw_result.get('error') or 'Composio reported an unsuccessful request'}")
+            processed_emails, next_page_token = parse_gmail_fetch_response(raw_result, query=query, cleaner=_EMAIL_CLEANER)
+            for email in processed_emails:
+                parsed = _processed_to_schema(email)
+                collected[parsed.id] = parsed
+            if not next_page_token:
+                break
+            if next_page_token in seen_tokens:
+                raise RuntimeError("Gmail repeated a result page; the search is incomplete and no total can be confirmed")
+            seen_tokens.add(next_page_token)
+            page_token = next_page_token
+        else:
+            raise RuntimeError("The search exceeded its page limit; narrow the date range before requesting a total")
     except Exception as exc:
         logger.error(f"[EMAIL_SEARCH] Gmail API failed for '{query}': {exc}")
-        return EmailSearchToolResult(
-            status="error",
-            query=query,
-            error=str(exc),
-        )
-
-    if raw_result.get("successful") is False or raw_result.get("error"):
-        return EmailSearchToolResult(status="error", query=query, error=f"Gmail API search failed: {raw_result.get('error') or 'Composio reported an unsuccessful request'}")
-
-    processed_emails, next_page_token = parse_gmail_fetch_response(
-        raw_result,
-        query=query,
-        cleaner=_EMAIL_CLEANER,
-    )
-    parsed_emails = [_processed_to_schema(email) for email in processed_emails]
+        return EmailSearchToolResult(status="error", query=query, error=str(exc))
 
     queries.append(query)
-    for email in parsed_emails:
-        if email.id not in emails:
-            emails[email.id] = email
-
-    return EmailSearchToolResult(
-        status="success",
-        query=query,
-        result_count=len(parsed_emails),
-        next_page_token=next_page_token,
-        messages=parsed_emails,
-    )
+    for identifier, email in collected.items():
+        emails.setdefault(identifier, email)
+    return EmailSearchToolResult(status="success", query=query, result_count=len(collected), messages=list(collected.values()))
 
 
 # Build final response with selected emails and logging
@@ -368,28 +370,25 @@ def _build_response(
 ) -> List[Dict[str, Any]]:
     # Deduplicate queries while preserving order
     unique_queries = list(dict.fromkeys(queries))
-    
+
     # Deduplicate and filter valid email IDs efficiently
     valid_ids = [id.strip() for id in selected_ids if id and id.strip()]
     unique_ids = list(dict.fromkeys(valid_ids))
     selected_emails = [emails[id] for id in unique_ids if id in emails]
-    
+
     # Log any missing email IDs
     missing_ids = [id for id in unique_ids if id not in emails]
     if missing_ids:
         logger.warning(f"[EMAIL_SEARCH] {len(missing_ids)} selected email IDs not found")
-    
+
     payload = TaskEmailSearchPayload(emails=selected_emails)
-    
+
     _LOG_STORE.record_action(
         TASK_TOOL_NAME,
-        description=(
-            f"{TASK_TOOL_NAME} completed | queries={len(unique_queries)} "
-            f"| emails={len(selected_emails)}"
-        ),
+        description=(f"{TASK_TOOL_NAME} completed | queries={len(unique_queries)} " f"| emails={len(selected_emails)}"),
     )
-    
-    return [email.model_dump(exclude_none=True) for email in payload.emails]
+
+    return [email.model_dump(mode="json", exclude_none=True) for email in payload.emails]
 
 
 def _extract_assistant_message(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -411,7 +410,6 @@ def _parse_arguments(raw_arguments: Any) -> Tuple[Dict[str, Any], Optional[str]]
     return {}, ERROR_TOOL_ARGUMENTS_INVALID
 
 
-
 def _handle_completion_tool(arguments: Dict[str, Any]) -> Tuple[Optional[List[str]], Dict[str, Any]]:
     """Handle completion tool call, parsing message IDs and returning response."""
     raw_ids = arguments.get("message_ids")
@@ -419,10 +417,10 @@ def _handle_completion_tool(arguments: Dict[str, Any]) -> Tuple[Optional[List[st
         return None, {"status": "error", "error": ERROR_MESSAGE_IDS_REQUIRED}
     if not isinstance(raw_ids, list):
         return None, {"status": "error", "error": ERROR_MESSAGE_IDS_MUST_BE_LIST}
-    
+
     # Filter out empty/invalid IDs efficiently
     message_ids = [str(value).strip() for value in raw_ids if str(value).strip()]
-    
+
     return message_ids, {"status": "success", "message_ids": message_ids}
 
 
@@ -432,9 +430,6 @@ def _safe_json_dumps(payload: Any) -> str:
         return json.dumps(payload, ensure_ascii=False)
     except (TypeError, ValueError):
         return json.dumps({"repr": repr(payload)})
-
-
-
 
 
 def _processed_to_schema(email: ProcessedEmail) -> GmailSearchEmail:

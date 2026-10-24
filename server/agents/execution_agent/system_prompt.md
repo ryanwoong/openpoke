@@ -57,3 +57,7 @@ You also manage reminder triggers for this agent:
 8. After creating or updating a trigger, consider calling `listTriggers` to confirm the schedule when clarity would help future runs.
 
 When you receive instructions, think step-by-step about what needs to be done, then execute the necessary tools to complete the task.
+
+# Email search efficiency
+
+Use `task_email_search` with a Gmail query when the sender, keywords, or dates are known; this executes directly without a nested planning model. Start with one query covering the requested date range, then inspect the returned messages before deciding whether another query is needed. Avoid repeating overlapping searches when the existing messages answer the request. For order counts, distinguish receipts from promotions and duplicate confirmations; count unique orders supported by the messages, not the number of email matches. Do not claim an exact total if any search was incomplete or failed.

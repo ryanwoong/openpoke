@@ -64,6 +64,9 @@ class Settings(BaseModel):
 
     execution_timeout_seconds: int = Field(default=_env_int("OPENPOKE_EXECUTION_TIMEOUT_SECONDS", 180), ge=1)
 
+    context_window_tokens: int = Field(default=_env_int("OPENPOKE_CONTEXT_WINDOW_TOKENS", 32768), ge=2048)
+    context_output_tokens: int = Field(default=_env_int("OPENPOKE_CONTEXT_OUTPUT_TOKENS", 4096), ge=128)
+
     # HTTP behaviour
     cors_allow_origins_raw: str = Field(default=os.getenv("OPENPOKE_CORS_ALLOW_ORIGINS", "*"))
     enable_docs: bool = Field(default=os.getenv("OPENPOKE_ENABLE_DOCS", "1") != "0")

@@ -6,7 +6,6 @@ from typing import List, Optional, Dict, Any
 from ...services.execution import get_execution_agent_logs
 from ...logging_config import logger
 
-
 # Load system prompt template from file
 _prompt_path = Path(__file__).parent / "system_prompt.md"
 if _prompt_path.exists():
@@ -33,17 +32,13 @@ class ExecutionAgent:
     """Manages state and history for an execution agent."""
 
     # Initialize execution agent with name, conversation limits, and log store access
-    def __init__(
-        self,
-        name: str,
-        conversation_limit: Optional[int] = None
-    ):
+    def __init__(self, name: str, conversation_limit: Optional[int] = 10):
         """
         Initialize an execution agent.
 
         Args:
             name: Human-readable agent name (e.g., 'conversation with keith')
-            conversation_limit: Optional limit on past conversations to include (None = all)
+            conversation_limit: Recent tasks to include; defaults to 10 (None = all).
         """
         self.name = name
         self.conversation_limit = conversation_limit
@@ -55,10 +50,7 @@ class ExecutionAgent:
         agent_purpose = f"Handle tasks related to: {self.name}"
         from ...services.gmail.client import get_integration_context
 
-        prompt = SYSTEM_PROMPT_TEMPLATE.format(
-            agent_name=self.name,
-            agent_purpose=agent_purpose
-        )
+        prompt = SYSTEM_PROMPT_TEMPLATE.format(agent_name=self.name, agent_purpose=agent_purpose)
         return f"{prompt}\n\n{get_integration_context()}"
 
     # Combine base system prompt with conversation history, applying conversation limits
@@ -78,20 +70,23 @@ class ExecutionAgent:
             # Apply conversation limit if needed
             if self.conversation_limit and self.conversation_limit > 0:
                 # Parse entries and limit them
-                lines = transcript.split('\n')
-                request_count = sum(1 for line in lines if '<agent_request' in line)
+                lines = transcript.split("\n")
+                request_count = sum(1 for line in lines if "<agent_request" in line)
 
                 if request_count > self.conversation_limit:
                     # Find where to cut
                     kept_requests = 0
                     cutoff_index = len(lines)
                     for i in range(len(lines) - 1, -1, -1):
-                        if '<agent_request' in lines[i]:
+                        if "<agent_request" in lines[i]:
                             kept_requests += 1
                             if kept_requests == self.conversation_limit:
                                 cutoff_index = i
                                 break
-                    transcript = '\n'.join(lines[cutoff_index:])
+                    transcript = (
+                        f"<execution_history_scope>Latest {self.conversation_limit} tasks only; older records remain saved. This is not a complete audit.</execution_history_scope>\n"
+                        + "\n".join(lines[cutoff_index:])
+                    )
 
             return f"{base_prompt}\n\n# Execution History\n\n{transcript}"
 
@@ -108,9 +103,7 @@ class ExecutionAgent:
         Returns:
             List of messages in OpenRouter format
         """
-        return [
-            {"role": "user", "content": current_instruction}
-        ]
+        return [{"role": "user", "content": current_instruction}]
 
     # Log the agent's final response to the execution log store
     def record_response(self, response: str) -> None:

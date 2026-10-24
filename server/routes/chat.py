@@ -50,6 +50,9 @@ def clear_history() -> ChatHistoryClearResponse:
     trigger_service.clear_all()
 
     trace_store.clear()
+    from ..openrouter_client.context import context_compactor
+
+    context_compactor.clear()
 
     return ChatHistoryClearResponse()
 

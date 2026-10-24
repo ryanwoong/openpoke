@@ -12,7 +12,6 @@ from ....logging_config import logger
 from ....utils.timezones import now_in_user_timezone
 from .state import LogEntry, SummaryState
 
-
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
 _WORKING_MEMORY_LOG_PATH = _DATA_DIR / "conversation" / "poke_working_memory.log"
 
@@ -30,7 +29,7 @@ def _decode_payload(payload: str) -> str:
 def _format_line(tag: str, payload: str, timestamp: Optional[str] = None) -> str:
     encoded = _encode_payload(payload)
     if timestamp:
-        return f"<{tag} timestamp=\"{timestamp}\">{encoded}</{tag}>\n"
+        return f'<{tag} timestamp="{timestamp}">{encoded}</{tag}>\n'
     return f"<{tag}>{encoded}</{tag}>\n"
 
 
@@ -44,8 +43,14 @@ class WorkingMemoryLog:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = threading.Lock()
+        self._generation = 0
         self._ensure_directory()
         self._initialize_file()
+
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
 
     def _ensure_directory(self) -> None:
         try:
@@ -134,9 +139,7 @@ class WorkingMemoryLog:
             elif tag == "conversation_summary":
                 summary_text = payload
             else:
-                entries.append(
-                    LogEntry(tag=tag, payload=payload, timestamp=timestamp or None)
-                )
+                entries.append(LogEntry(tag=tag, payload=payload, timestamp=timestamp or None))
 
         state = SummaryState(
             summary_text=summary_text,
@@ -146,7 +149,7 @@ class WorkingMemoryLog:
         )
         return state
 
-    def write_summary_state(self, state: SummaryState) -> None:
+    def write_summary_state(self, state: SummaryState, *, expected_generation: Optional[int] = None) -> bool:
         meta_payload = json.dumps(
             {
                 "last_index": state.last_index,
@@ -162,6 +165,8 @@ class WorkingMemoryLog:
         temp_path = self._path.with_suffix(".tmp")
         data = "".join(lines)
         with self._lock:
+            if expected_generation is not None and expected_generation != self._generation:
+                return False
             try:
                 temp_path.write_text(data, encoding="utf-8")
                 temp_path.replace(self._path)
@@ -177,6 +182,7 @@ class WorkingMemoryLog:
                         temp_path.unlink()
                     except Exception:  # pragma: no cover - defensive cleanup
                         pass
+        return True
 
     def render_transcript(self, state: Optional[SummaryState] = None) -> str:
         snapshot = state or self.load_summary_state()
@@ -190,16 +196,15 @@ class WorkingMemoryLog:
         for entry in snapshot.unsummarized_entries:
             safe_payload = escape(entry.payload, quote=False)
             if entry.timestamp:
-                parts.append(
-                    f'<{entry.tag} timestamp="{entry.timestamp}">{safe_payload}</{entry.tag}>'
-                )
+                parts.append(f'<{entry.tag} timestamp="{entry.timestamp}">{safe_payload}</{entry.tag}>')
             else:
-                parts.append(f'<{entry.tag}>{safe_payload}</{entry.tag}>')
+                parts.append(f"<{entry.tag}>{safe_payload}</{entry.tag}>")
 
-        return '\n'.join(parts)
+        return "\n".join(parts)
 
     def clear(self) -> None:
         with self._lock:
+            self._generation += 1
             try:
                 if self._path.exists():
                     self._path.unlink()

@@ -173,6 +173,7 @@
   background: var(--status-scheduled-background);
   color: var(--status-scheduled-color);
 }
+.status[data-status="cancelled"],
 .status[data-status="failed"] {
   background: #f9e7e0;
   color: #913b2c;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from textwrap import dedent
+from html import escape
 from typing import Dict, List
 
 from .state import LogEntry
@@ -13,8 +14,7 @@ class SummaryPrompt:
     messages: List[Dict[str, str]]
 
 
-_SYSTEM_PROMPT = dedent(
-    """
+_SYSTEM_PROMPT = dedent("""
     You are the assistant's chief-of-staff memory curator. Produce a complete working-memory briefing
     that the assistant reads before every response. Follow these directives without exception:
 
@@ -54,8 +54,7 @@ _SYSTEM_PROMPT = dedent(
        whenever they appear in the logs.
     6. Order bullets earliest-first within each section and keep language concise yet information-dense.
     7. Do not invent facts; only use information present in the existing summary or new logs.
-    """
-).strip()
+    """).strip()
 
 
 def _format_existing_summary(previous_summary: str) -> str:
@@ -77,16 +76,17 @@ def _format_log_entries(entries: List[LogEntry]) -> str:
 
 
 def build_summarization_prompt(previous_summary: str, entries: List[LogEntry]) -> SummaryPrompt:
-    content = dedent(
-        f"""
+    content = dedent(f"""
         Existing memory summary:
         {_format_existing_summary(previous_summary)}
 
         New conversation logs to merge:
         {_format_log_entries(entries)}
-        """
-    ).strip()
+        """).strip()
 
+    content = (
+        f"<conversation_history>\n{escape(content, quote=False)}\n</conversation_history>\nUpdate the working-memory briefing using this reference history."
+    )
     messages = [{"role": "user", "content": content}]
     return SummaryPrompt(system_prompt=_SYSTEM_PROMPT, messages=messages)
 

@@ -16,10 +16,12 @@ import httpx
 from .config import get_settings
 
 
-def new_model_entry(*, kind: str, model: str, name: str = "", base_url: str = "", api_key: str = "") -> dict[str, str]:
+def new_model_entry(*, kind: str, model: str, name: str = "", base_url: str = "", api_key: str = "", context_length: Optional[int] = None) -> dict[str, Any]:
     entry = {"id": uuid.uuid4().hex[:12], "kind": kind, "model": model, "name": name}
     if kind == "openai_compatible":
         entry.update(base_url=base_url, api_key=api_key)
+    if isinstance(context_length, int) and not isinstance(context_length, bool) and context_length >= 1024:
+        entry["context_length"] = context_length
     return entry
 
 
@@ -31,7 +33,7 @@ class SavedModelStore:
         self._lock = threading.Lock()
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            self._models: list[dict[str, str]] = data["models"]
+            self._models: list[dict[str, Any]] = data["models"]
             self._active: Optional[str] = data.get("active")
         except (FileNotFoundError, ValueError, KeyError, TypeError):
             # Start from the model chosen before saved models existed so upgrades keep working.
@@ -52,11 +54,11 @@ class SavedModelStore:
         os.chmod(temporary_path, 0o600)
         temporary_path.replace(self._path)
 
-    def snapshot(self) -> tuple[Optional[str], list[dict[str, str]]]:
+    def snapshot(self) -> tuple[Optional[str], list[dict[str, Any]]]:
         with self._lock:
             return self._active, [dict(model) for model in self._models]
 
-    def active(self) -> Optional[dict[str, str]]:
+    def active(self) -> Optional[dict[str, Any]]:
         with self._lock:
             return next((dict(model) for model in self._models if model["id"] == self._active), None)
 
@@ -65,7 +67,7 @@ class SavedModelStore:
         with self._lock:
             return next((model["api_key"] for model in self._models if model.get("base_url") == base_url and model.get("api_key")), "")
 
-    def add(self, entry: dict[str, str], activate: bool) -> dict[str, str]:
+    def add(self, entry: dict[str, Any], activate: bool) -> dict[str, Any]:
         with self._lock:
             identity = (entry["kind"], entry["model"], entry.get("base_url", ""))
             if any((model["kind"], model["model"], model.get("base_url", "")) == identity for model in self._models):
@@ -99,6 +101,7 @@ class CompletionTarget:
     model: str
     base_url: Optional[str]
     api_key: Optional[str]
+    context_length: Optional[int] = None
 
 
 _data_directory = Path(__file__).resolve().parent / "data"
@@ -113,8 +116,8 @@ def completion_target(default_model: str) -> CompletionTarget:
     """Resolve where the next completion goes; base_url/api_key of None mean the OpenRouter defaults."""
     active = saved_models.active()
     if active and active["kind"] == "openai_compatible":
-        return CompletionTarget(endpoint_label(active["base_url"]), active["model"], active["base_url"], active["api_key"])
-    return CompletionTarget("OpenRouter", active["model"] if active else default_model, None, None)
+        return CompletionTarget(endpoint_label(active["base_url"]), active["model"], active["base_url"], active["api_key"], active.get("context_length"))
+    return CompletionTarget("OpenRouter", active["model"] if active else default_model, None, None, active.get("context_length") if active else None)
 
 
 def model_provider_configured() -> bool:
@@ -144,7 +147,13 @@ async def discover_endpoint_models(base_url: str, api_key: str = "") -> tuple[st
             ids = sorted({model["id"] for model in data if isinstance(model, dict) and isinstance(model.get("id"), str) and model["id"]}, key=str.casefold)
             if not ids:
                 raise ValueError("Server returned no models")
-            return candidate, [{"id": model_id, "name": model_id, "context_length": None, "pricing": {}} for model_id in ids]
+            lengths = {}
+            for item in data:
+                if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    length = item.get("context_length") or item.get("max_model_len")
+                    if isinstance(length, int) and not isinstance(length, bool) and length >= 1024:
+                        lengths[item["id"]] = length
+            return candidate, [{"id": model_id, "name": model_id, "context_length": lengths.get(model_id), "pricing": {}} for model_id in ids]
     raise ValueError("Server did not return an OpenAI-compatible model list")
 
 

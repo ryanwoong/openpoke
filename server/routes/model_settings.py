@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -32,7 +32,7 @@ class ActiveModel(BaseModel):
     id: str = Field(min_length=1, max_length=64)
 
 
-def _public(model: dict[str, str]) -> dict[str, object]:
+def _public(model: dict[str, Any]) -> dict[str, object]:
     view: dict[str, object] = {key: value for key, value in model.items() if key != "api_key"}
     if model["kind"] == "openai_compatible":
         view["has_api_key"] = bool(model.get("api_key"))
@@ -101,13 +101,21 @@ async def add_model(payload: NewModel):
         base_url, models = await _discover(payload.base_url, api_key)
         if not any(model["id"] == payload.model for model in models):
             raise HTTPException(status_code=400, detail="That model isn't served by this server. Discover models and choose one from the list.")
-        entry = new_model_entry(kind="openai_compatible", model=payload.model, name=payload.name.strip(), base_url=base_url, api_key=api_key)
+        match = next(model for model in models if model["id"] == payload.model)
+        entry = new_model_entry(
+            kind="openai_compatible",
+            model=payload.model,
+            name=payload.name.strip(),
+            base_url=base_url,
+            api_key=api_key,
+            context_length=match.get("context_length"),
+        )
     else:
         catalog = await _catalog()
         match = next((model for model in catalog if model["id"] == payload.model), None)
         if not match:
             raise HTTPException(status_code=400, detail="Choose an available OpenRouter model with tool calling support")
-        entry = new_model_entry(kind="openrouter", model=payload.model, name=payload.name.strip() or match["name"])
+        entry = new_model_entry(kind="openrouter", model=payload.model, name=payload.name.strip() or match["name"], context_length=match.get("context_length"))
     try:
         saved_models.add(entry, activate=payload.activate)
     except ValueError as exc:

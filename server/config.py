@@ -62,6 +62,9 @@ class Settings(BaseModel):
     composio_gmail_auth_config_id: Optional[str] = Field(default=os.getenv("COMPOSIO_GMAIL_AUTH_CONFIG_ID"))
     composio_api_key: Optional[str] = Field(default=os.getenv("COMPOSIO_API_KEY"))
 
+    context_window_tokens: int = Field(default=_env_int("OPENPOKE_CONTEXT_WINDOW_TOKENS", 32768), ge=2048)
+    context_output_tokens: int = Field(default=_env_int("OPENPOKE_CONTEXT_OUTPUT_TOKENS", 4096), ge=128)
+
     # HTTP behaviour
     cors_allow_origins_raw: str = Field(default=os.getenv("OPENPOKE_CORS_ALLOW_ORIGINS", "*"))
     enable_docs: bool = Field(default=os.getenv("OPENPOKE_ENABLE_DOCS", "1") != "0")

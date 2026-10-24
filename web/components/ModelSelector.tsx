@@ -287,7 +287,7 @@ export default function ModelSelector({ value, onChange, onLoad, disabled }: { v
             </button>
             {present && (
               <div
-                className={styles.dropdown}
+                className={`${styles.dropdown} menu-popover`}
                 data-state={open ? "open" : "closed"}
                 aria-hidden={!open}
                 onAnimationEnd={(event) => {

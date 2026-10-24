@@ -3,22 +3,21 @@
 import Image from "next/image";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { LoadingIndicator } from "./ui/LoadingIndicator";
 import styles from "./ModelSelector.module.css";
 
-type Model = {
+export type Model = {
   id: string;
   name: string;
   context_length: number | null;
   pricing: Record<string, string>;
 };
 
-function price(value: string | undefined, multiplier = 1) {
+export function price(value: string | undefined, multiplier = 1) {
   if (value === undefined || !Number.isFinite(Number(value)) || Number(value) < 0) return "Not listed";
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 }).format(Number(value) * multiplier);
 }
 
-function isFree(model: Model) {
+export function isFree(model: Model) {
   return Number(model.pricing.prompt) === 0 && Number(model.pricing.completion) === 0 && Number(model.pricing.request || 0) === 0;
 }
 
@@ -60,7 +59,7 @@ const providerIcons: Record<string, string> = {
   "ibm-granite": "watsonx",
 };
 
-function ProviderIcon({ modelId }: { modelId: string }) {
+export function ProviderIcon({ modelId }: { modelId: string }) {
   const provider = modelId.split("/")[0].replace(/^~+/, "");
   const icon = providerIcons[provider];
   const [failedIcon, setFailedIcon] = useState("");
@@ -103,11 +102,8 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
-export default function ModelSelector({ value, onChange, onLoad, disabled }: { value: string; onChange: (model: string) => void; onLoad: (model: string) => void; disabled: boolean }) {
-  const [models, setModels] = useState<Model[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
+/** Searchable picker over the OpenRouter catalog. */
+export default function ModelSelector({ models, value, onChange, disabled }: { models: Model[]; value: string; onChange: (modelId: string) => void; disabled: boolean }) {
   const [query, setQuery] = useState("");
   const [freeOnly, setFreeOnly] = useState(false);
   const [open, setOpen] = useState(false);
@@ -120,35 +116,13 @@ export default function ModelSelector({ value, onChange, onLoad, disabled }: { v
   const listRef = useRef<HTMLDivElement>(null);
   const id = useId();
 
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError("");
-    void (async () => {
-      try {
-        const response = await fetch("/api/settings/model", { cache: "no-store", signal: controller.signal });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || data.detail || "Unable to load models");
-        if (!controller.signal.aborted) {
-          setModels(data.models);
-          onLoad(data.model);
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Unable to load models");
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    })();
-    return () => controller.abort();
-  }, [attempt, onLoad]);
-
   const selected = models.find((model) => model.id === value);
   const filtered = useMemo(() => models.filter((model) => (!freeOnly || isFree(model)) && `${model.name} ${model.id}`.toLowerCase().includes(query.trim().toLowerCase())), [models, query, freeOnly]);
 
   useLayoutEffect(() => {
     if (!open) return;
     const trigger = triggerRef.current;
-    const panel = trigger?.closest('[role="tabpanel"]');
+    const panel = trigger?.closest('[role="tabpanel"], [data-dropdown-boundary]');
     if (!trigger || !panel) return;
     const resize = () => setDropdownHeight(Math.max(0, Math.min(320, panel.getBoundingClientRect().bottom - trigger.getBoundingClientRect().bottom - 12)));
     resize();
@@ -217,267 +191,236 @@ export default function ModelSelector({ value, onChange, onLoad, disabled }: { v
   }
 
   return (
-    <section
-      className={styles.section}
-      aria-labelledby={`${id}-heading`}
-    >
-      <header className={styles.header}>
-        <div className={styles.titleRow}>
-          <h3 id={`${id}-heading`}>AI model</h3>
-          <span className={styles.provider}>OpenRouter</span>
-        </div>
-        <p>The model behind your chats and automations.</p>
-      </header>
-      {loading ? (
-        <LoadingIndicator label="Loading models…" />
-      ) : error ? (
-        <div
-          role="alert"
-          className={styles.error}
+    <>
+      <div
+        ref={pickerRef}
+        className={styles.picker}
+        data-open={open}
+        onBlur={(event) => {
+          if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && open) {
+            event.preventDefault();
+            event.stopPropagation();
+            closePicker();
+          }
+        }}
+      >
+        <button
+          ref={triggerRef}
+          type="button"
+          className={styles.trigger}
+          aria-label={`Choose AI model: ${selected?.name || value}`}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-controls={`${id}-list`}
+          disabled={disabled}
+          onClick={() => (open ? setOpen(false) : openPicker())}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              openPicker();
+            }
+          }}
         >
-          {error}{" "}
-          <button
-            type="button"
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            Try again
-          </button>
-        </div>
-      ) : (
-        <>
+          <ProviderIcon modelId={value} />
+          <span className={styles.modelIdentity}>
+            <span className={styles.eyebrow}>Selected model</span>
+            <span className={styles.modelName}>{selected?.name || value || "Choose a model"}</span>
+          </span>
+          {selected && isFree(selected) && <span className={styles.freeBadge}>Free</span>}
+          <Chevron open={open} />
+        </button>
+        {present && (
           <div
-            ref={pickerRef}
-            className={styles.picker}
-            data-open={open}
-            onBlur={(event) => {
-              if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+            className={styles.dropdown}
+            data-state={open ? "open" : "closed"}
+            aria-hidden={!open}
+            onAnimationEnd={(event) => {
+              if (event.target === event.currentTarget && !open) setPresent(false);
             }}
-            onKeyDown={(event) => {
-              if (event.key === "Escape" && open) {
-                event.preventDefault();
-                event.stopPropagation();
-                closePicker();
-              }
-            }}
+            style={{ maxHeight: dropdownHeight }}
           >
-            <button
-              ref={triggerRef}
-              type="button"
-              className={styles.trigger}
-              aria-label={`Choose AI model: ${selected?.name || value}`}
-              aria-expanded={open}
-              aria-haspopup="listbox"
-              aria-controls={`${id}-list`}
-              disabled={disabled}
-              onClick={() => (open ? setOpen(false) : openPicker())}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                  event.preventDefault();
-                  openPicker();
-                }
-              }}
-            >
-              <ProviderIcon modelId={value} />
-              <span className={styles.modelIdentity}>
-                <span className={styles.eyebrow}>Selected model</span>
-                <span className={styles.modelName}>{selected?.name || value || "Choose a model"}</span>
-              </span>
-              {selected && isFree(selected) && <span className={styles.freeBadge}>Free</span>}
-              <Chevron open={open} />
-            </button>
-            {present && (
-              <div
-                className={styles.dropdown}
-                data-state={open ? "open" : "closed"}
-                aria-hidden={!open}
-                onAnimationEnd={(event) => {
-                  if (event.target === event.currentTarget && !open) setPresent(false);
-                }}
-                style={{ maxHeight: dropdownHeight }}
+            <div className={styles.searchRow}>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                aria-hidden="true"
               >
-                <div className={styles.searchRow}>
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
+                <circle
+                  cx="10.5"
+                  cy="10.5"
+                  r="6.5"
+                />
+                <path d="m16 16 4 4" />
+              </svg>
+              <input
+                ref={searchRef}
+                disabled={!open}
+                role="combobox"
+                aria-label="Search models by name or provider"
+                aria-expanded={open}
+                aria-controls={`${id}-list`}
+                aria-autocomplete="list"
+                aria-activedescendant={filtered[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
+                placeholder="Search models or providers…"
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setActiveIndex(0);
+                }}
+                onKeyDown={(event) => {
+                  if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && (event.key.startsWith("Arrow") || event.ctrlKey)) {
+                    event.preventDefault();
+                    setActiveIndex((index) => (event.key === "Home" ? 0 : event.key === "End" ? Math.max(0, filtered.length - 1) : Math.max(0, Math.min(filtered.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))));
+                  } else if (event.key === "Enter") {
+                    event.preventDefault();
+                    if (filtered[activeIndex]) selectModel(filtered[activeIndex]);
+                  }
+                }}
+              />
+            </div>
+            <div className={styles.filterRow}>
+              <label
+                htmlFor={`${id}-free-only`}
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                <input
+                  id={`${id}-free-only`}
+                  type="checkbox"
+                  disabled={!open}
+                  checked={freeOnly}
+                  onChange={(event) => {
+                    setFreeOnly(event.target.checked);
+                    setActiveIndex(0);
+                  }}
+                />
+                Free only
+              </label>
+              <span>{filtered.length} models</span>
+            </div>
+            <div
+              id={`${id}-list`}
+              ref={listRef}
+              role="listbox"
+              tabIndex={-1}
+              aria-label="AI models"
+              className={styles.options}
+            >
+              {filtered.map((model, index) => (
+                <div
+                  key={model.id}
+                  id={`${id}-option-${index}`}
+                  role="option"
+                  aria-selected={model.id === value}
+                  className={styles.option}
+                  data-active={activeIndex === index}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectModel(model)}
+                >
+                  <ProviderIcon modelId={model.id} />
+                  <span className={styles.modelIdentity}>
+                    <span
+                      className={styles.optionName}
+                      title={model.name}
+                    >
+                      {model.name}
+                    </span>
+                    <span className={styles.modelId}>{model.id}</span>
+                  </span>
+                  {isFree(model) ? (
+                    <span className={styles.freeBadge}>Free</span>
+                  ) : (
+                    <span className={styles.optionPrice}>
+                      <span>
+                        {price(model.pricing.prompt, 1e6)} / {price(model.pricing.completion, 1e6)}
+                      </span>
+                      <span>in / out · per 1M</span>
+                    </span>
+                  )}
+                  <span
+                    className={styles.check}
                     aria-hidden="true"
                   >
-                    <circle
-                      cx="10.5"
-                      cy="10.5"
-                      r="6.5"
-                    />
-                    <path d="m16 16 4 4" />
-                  </svg>
-                  <input
-                    ref={searchRef}
-                    disabled={!open}
-                    role="combobox"
-                    aria-label="Search models by name or provider"
-                    aria-expanded={open}
-                    aria-controls={`${id}-list`}
-                    aria-autocomplete="list"
-                    aria-activedescendant={filtered[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
-                    placeholder="Search models or providers…"
-                    value={query}
-                    onChange={(event) => {
-                      setQuery(event.target.value);
-                      setActiveIndex(0);
-                    }}
-                    onKeyDown={(event) => {
-                      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && (event.key.startsWith("Arrow") || event.ctrlKey)) {
-                        event.preventDefault();
-                        setActiveIndex((index) => (event.key === "Home" ? 0 : event.key === "End" ? Math.max(0, filtered.length - 1) : Math.max(0, Math.min(filtered.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))));
-                      } else if (event.key === "Enter") {
-                        event.preventDefault();
-                        if (filtered[activeIndex]) selectModel(filtered[activeIndex]);
-                      }
-                    }}
-                  />
+                    {model.id === value ? "✓" : ""}
+                  </span>
                 </div>
-                <div className={styles.filterRow}>
-                  <label
-                    htmlFor={`${id}-free-only`}
-                    onMouseDown={(event) => event.preventDefault()}
-                  >
-                    <input
-                      id={`${id}-free-only`}
-                      type="checkbox"
-                      disabled={!open}
-                      checked={freeOnly}
-                      onChange={(event) => {
-                        setFreeOnly(event.target.checked);
-                        setActiveIndex(0);
-                      }}
-                    />
-                    Free only
-                  </label>
-                  <span>{filtered.length} models</span>
-                </div>
-                <div
-                  id={`${id}-list`}
-                  ref={listRef}
-                  role="listbox"
-                  tabIndex={-1}
-                  aria-label="AI models"
-                  className={styles.options}
-                >
-                  {filtered.map((model, index) => (
-                    <div
-                      key={model.id}
-                      id={`${id}-option-${index}`}
-                      role="option"
-                      aria-selected={model.id === value}
-                      className={styles.option}
-                      data-active={activeIndex === index}
-                      onMouseEnter={() => setActiveIndex(index)}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => selectModel(model)}
-                    >
-                      <ProviderIcon modelId={model.id} />
-                      <span className={styles.modelIdentity}>
-                        <span
-                          className={styles.optionName}
-                          title={model.name}
-                        >
-                          {model.name}
-                        </span>
-                        <span className={styles.modelId}>{model.id}</span>
-                      </span>
-                      {isFree(model) ? (
-                        <span className={styles.freeBadge}>Free</span>
-                      ) : (
-                        <span className={styles.optionPrice}>
-                          <span>
-                            {price(model.pricing.prompt, 1e6)} / {price(model.pricing.completion, 1e6)}
-                          </span>
-                          <span>in / out · per 1M</span>
-                        </span>
-                      )}
-                      <span
-                        className={styles.check}
-                        aria-hidden="true"
-                      >
-                        {model.id === value ? "✓" : ""}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                {filtered.length === 0 && <p className={styles.empty}>No models found. Try another search or turn off “Free only”.</p>}
-              </div>
-            )}
+              ))}
+            </div>
+            {filtered.length === 0 && <p className={styles.empty}>No models found. Try another search or turn off “Free only”.</p>}
           </div>
-          {selected ? (
-            <div className={styles.summary}>
-              <div className={styles.summaryHeading}>
-                <h4>At a glance</h4>
-                <span>USD / 1M tokens</span>
-              </div>
-              <dl className={styles.stats}>
-                <div>
-                  <dt>Input</dt>
-                  <dd>{price(selected.pricing.prompt, 1e6)}</dd>
-                </div>
-                <div>
-                  <dt>Output</dt>
-                  <dd>{price(selected.pricing.completion, 1e6)}</dd>
-                </div>
-                <div>
-                  <dt>Context window</dt>
-                  <dd>{selected.context_length != null ? new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(selected.context_length) : "Not listed"}</dd>
-                </div>
-              </dl>
+        )}
+      </div>
+      {selected ? (
+        <div className={styles.summary}>
+          <div className={styles.summaryHeading}>
+            <h4>At a glance</h4>
+            <span>USD / 1M tokens</span>
+          </div>
+          <dl className={styles.stats}>
+            <div>
+              <dt>Input</dt>
+              <dd>{price(selected.pricing.prompt, 1e6)}</dd>
             </div>
-          ) : (
-            <p className={styles.warning}>This model is no longer available. Choose another model above.</p>
-          )}
-          <details className={styles.details}>
-            <summary>Pricing & details</summary>
-            <div className={styles.detailsBody}>
-              {selected && (
-                <dl className={styles.extraPrices}>
-                  {Number(selected.pricing.request) > 0 && (
-                    <div>
-                      <dt>Per request</dt>
-                      <dd>{price(selected.pricing.request)}</dd>
-                    </div>
-                  )}
-                  {selected.pricing.input_cache_read !== undefined && (
-                    <div>
-                      <dt>Cached input / 1M tokens</dt>
-                      <dd>{price(selected.pricing.input_cache_read, 1e6)}</dd>
-                    </div>
-                  )}
-                  {selected.pricing.input_cache_write !== undefined && (
-                    <div>
-                      <dt>Cache write / 1M tokens</dt>
-                      <dd>{price(selected.pricing.input_cache_write, 1e6)}</dd>
-                    </div>
-                  )}
-                  {selected.context_length != null && (
-                    <div>
-                      <dt>Full context window</dt>
-                      <dd>{selected.context_length.toLocaleString()} tokens</dd>
-                    </div>
-                  )}
-                </dl>
+            <div>
+              <dt>Output</dt>
+              <dd>{price(selected.pricing.completion, 1e6)}</dd>
+            </div>
+            <div>
+              <dt>Context window</dt>
+              <dd>{selected.context_length != null ? new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(selected.context_length) : "Not listed"}</dd>
+            </div>
+          </dl>
+        </div>
+      ) : null}
+      <details className={styles.details}>
+        <summary>Pricing & details</summary>
+        <div className={styles.detailsBody}>
+          {selected && (
+            <dl className={styles.extraPrices}>
+              {Number(selected.pricing.request) > 0 && (
+                <div>
+                  <dt>Per request</dt>
+                  <dd>{price(selected.pricing.request)}</dd>
+                </div>
               )}
-              <p>OpenRouter list prices refresh every 5 minutes. Provider fees, caching, and usage can affect your bill. A task may use multiple AI calls. Free models may have rate limits.</p>
-              <p>Only models with text and tool support are shown.</p>
-              <a
-                href="https://openrouter.ai/models"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Compare models on OpenRouter ↗
-              </a>
-            </div>
-          </details>
-        </>
-      )}
-    </section>
+              {selected.pricing.input_cache_read !== undefined && (
+                <div>
+                  <dt>Cached input / 1M tokens</dt>
+                  <dd>{price(selected.pricing.input_cache_read, 1e6)}</dd>
+                </div>
+              )}
+              {selected.pricing.input_cache_write !== undefined && (
+                <div>
+                  <dt>Cache write / 1M tokens</dt>
+                  <dd>{price(selected.pricing.input_cache_write, 1e6)}</dd>
+                </div>
+              )}
+              {selected.context_length != null && (
+                <div>
+                  <dt>Full context window</dt>
+                  <dd>{selected.context_length.toLocaleString()} tokens</dd>
+                </div>
+              )}
+            </dl>
+          )}
+          <p>OpenRouter list prices refresh every 5 minutes. Provider fees, caching, and usage can affect your bill. A task may use multiple AI calls. Free models may have rate limits.</p>
+          <p>Only models with text and tool support are shown.</p>
+          <a
+            href="https://openrouter.ai/models"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Compare models on OpenRouter ↗
+          </a>
+        </div>
+      </details>
+    </>
   );
 }

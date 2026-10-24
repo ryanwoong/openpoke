@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Spinner } from "./ui/LoadingIndicator";
-import ModelSelector from "./ModelSelector";
+import ModelSettings from "./ModelSettings";
 import { AnimatedDialog } from "./ui/AnimatedDialog";
 import styles from "./SettingsModal.module.css";
 
@@ -97,24 +97,16 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
   const [activeTab, setActiveTab] = useState<(typeof settingsTabs)[number]>("Main");
   const [timezone, setTimezone] = useState(settings.timezone);
   const [alerts, setAlerts] = useState({ chime: settings.chime, titleAlert: settings.titleAlert });
-  const [model, setModel] = useState("");
-  const [savedModel, setSavedModel] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [isClearingData, setIsClearingData] = useState(false);
   const [confirmClearData, setConfirmClearData] = useState(false);
   const [clearDataError, setClearDataError] = useState("");
   const [dataCleared, setDataCleared] = useState(false);
-  const loadModel = useCallback((value: string) => {
-    setModel(value);
-    setSavedModel(value);
-  }, []);
 
   useEffect(() => {
     if (open) {
       setActiveTab(initialTab);
-      setModel("");
-      setSavedModel("");
       setSaveError("");
       setClearDataError("");
       setDataCleared(false);
@@ -144,15 +136,6 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
     setSaving(true);
     setSaveError("");
     try {
-      if (model && model !== savedModel) {
-        const response = await fetch("/api/settings/model", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || data.detail || "Unable to save model");
-      }
       onSave({ timezone, ...alerts });
       onClose();
     } catch (error) {
@@ -557,12 +540,7 @@ export default function SettingsModal({ open, onClose, settings, onSave, initial
               hidden={activeTab !== "Model"}
               tabIndex={0}
             >
-              <ModelSelector
-                value={model}
-                onChange={setModel}
-                onLoad={loadModel}
-                disabled={saving || isClearingData}
-              />
+              <ModelSettings disabled={saving || isClearingData} />
             </div>
             <div
               id="settings-panel-integrations"

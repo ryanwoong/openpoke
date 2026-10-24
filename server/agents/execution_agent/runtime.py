@@ -13,6 +13,7 @@ from .tools.scheduling import SCHEMA as SCHEDULING_SCHEMA
 from .tools import get_tool_schemas, get_tool_registry
 from ...config import get_settings
 from ...openrouter_client import request_chat_completion
+from ...model_settings import model_provider_configured
 from ...logging_config import logger
 
 
@@ -42,8 +43,8 @@ class ExecutionAgentRuntime:
         self.tool_registry = get_tool_registry(agent_name=agent_name)
         self.tool_schemas = get_tool_schemas()
 
-        if not self.api_key:
-            raise ValueError("OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable.")
+        if not model_provider_configured():
+            raise ValueError("No model provider configured. Set OPENROUTER_API_KEY or add an OpenAI-compatible model in Settings → Model.")
 
     # Main execution loop for running agent with LLM calls and tool execution
     @traced("execution", lambda self, instructions, scheduling=False: (self.agent.name, {"instructions": instructions, "access": ["Agent execution history", "Gmail connection status"]}))

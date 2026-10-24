@@ -1,39 +1,153 @@
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
+import uuid
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 
 from .config import get_settings
 
 
-class ModelStore:
-    def __init__(self, path: Path):
+def new_model_entry(*, kind: str, model: str, name: str = "", base_url: str = "", api_key: str = "") -> dict[str, str]:
+    entry = {"id": uuid.uuid4().hex[:12], "kind": kind, "model": model, "name": name}
+    if kind == "openai_compatible":
+        entry.update(base_url=base_url, api_key=api_key)
+    return entry
+
+
+class SavedModelStore:
+    """Persists the user's saved models, including endpoint API keys, and which one is active."""
+
+    def __init__(self, path: Path, legacy_model_path: Optional[Path] = None, default_model: str = ""):
         self._path = path
         self._lock = threading.Lock()
         try:
-            self._model = path.read_text(encoding="utf-8").strip() or None
-        except FileNotFoundError:
-            self._model = None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self._models: list[dict[str, str]] = data["models"]
+            self._active: Optional[str] = data.get("active")
+        except (FileNotFoundError, ValueError, KeyError, TypeError):
+            # Start from the model chosen before saved models existed so upgrades keep working.
+            try:
+                legacy_model = legacy_model_path.read_text(encoding="utf-8").strip() if legacy_model_path else ""
+            except FileNotFoundError:
+                legacy_model = ""
+            model = legacy_model or default_model
+            # A fixed id keeps the seed addressable across restarts until something is saved.
+            seed = {**new_model_entry(kind="openrouter", model=model), "id": "default"} if model else None
+            self._models = [seed] if seed else []
+            self._active = seed["id"] if seed else None
 
-    def get(self) -> Optional[str]:
+    def _save(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self._path.with_suffix(".tmp")
+        temporary_path.write_text(json.dumps({"active": self._active, "models": self._models}), encoding="utf-8")
+        os.chmod(temporary_path, 0o600)
+        temporary_path.replace(self._path)
+
+    def snapshot(self) -> tuple[Optional[str], list[dict[str, str]]]:
         with self._lock:
-            return self._model
+            return self._active, [dict(model) for model in self._models]
 
-    def set(self, model: str) -> None:
+    def active(self) -> Optional[dict[str, str]]:
         with self._lock:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            temporary_path = self._path.with_suffix(".tmp")
-            temporary_path.write_text(model, encoding="utf-8")
-            temporary_path.replace(self._path)
-            self._model = model
+            return next((dict(model) for model in self._models if model["id"] == self._active), None)
+
+    def api_key_for(self, base_url: str) -> str:
+        """Return the key saved with an endpoint, so adding another model from it needs no re-entry."""
+        with self._lock:
+            return next((model["api_key"] for model in self._models if model.get("base_url") == base_url and model.get("api_key")), "")
+
+    def add(self, entry: dict[str, str], activate: bool) -> dict[str, str]:
+        with self._lock:
+            identity = (entry["kind"], entry["model"], entry.get("base_url", ""))
+            if any((model["kind"], model["model"], model.get("base_url", "")) == identity for model in self._models):
+                raise ValueError("This model is already saved")
+            self._models.append(entry)
+            if activate or self._active is None:
+                self._active = entry["id"]
+            self._save()
+            return dict(entry)
+
+    def activate(self, model_id: str) -> None:
+        with self._lock:
+            if not any(model["id"] == model_id for model in self._models):
+                raise KeyError(model_id)
+            self._active = model_id
+            self._save()
+
+    def remove(self, model_id: str) -> None:
+        with self._lock:
+            if model_id == self._active:
+                raise ValueError("Switch to another model before removing the active one")
+            if not any(model["id"] == model_id for model in self._models):
+                raise KeyError(model_id)
+            self._models = [model for model in self._models if model["id"] != model_id]
+            self._save()
 
 
-model_store = ModelStore(Path(__file__).resolve().parent / "data" / "model.txt")
+@dataclass(frozen=True)
+class CompletionTarget:
+    label: str
+    model: str
+    base_url: Optional[str]
+    api_key: Optional[str]
+
+
+_data_directory = Path(__file__).resolve().parent / "data"
+saved_models = SavedModelStore(_data_directory / "models.json", _data_directory / "model.txt", get_settings().interaction_agent_model)
+
+
+def endpoint_label(base_url: str) -> str:
+    return urlparse(base_url).netloc or base_url
+
+
+def completion_target(default_model: str) -> CompletionTarget:
+    """Resolve where the next completion goes; base_url/api_key of None mean the OpenRouter defaults."""
+    active = saved_models.active()
+    if active and active["kind"] == "openai_compatible":
+        return CompletionTarget(endpoint_label(active["base_url"]), active["model"], active["base_url"], active["api_key"])
+    return CompletionTarget("OpenRouter", active["model"] if active else default_model, None, None)
+
+
+def model_provider_configured() -> bool:
+    return completion_target("").base_url is not None or bool(get_settings().openrouter_api_key)
+
+
+async def discover_endpoint_models(base_url: str, api_key: str = "") -> tuple[str, list[dict[str, Any]]]:
+    """List models from an OpenAI-compatible server, returning the base URL that answered."""
+    base_url = base_url.strip().rstrip("/")
+    candidates = [base_url] if base_url.endswith("/v1") else [base_url, f"{base_url}/v1"]
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    async with httpx.AsyncClient() as client:
+        for index, candidate in enumerate(candidates):
+            response = await client.get(f"{candidate}/models", headers=headers, timeout=10.0)
+            last = index == len(candidates) - 1
+            if response.status_code == 404 and not last:
+                continue
+            response.raise_for_status()
+            try:
+                data = response.json().get("data")
+            except (ValueError, AttributeError):
+                data = None
+            if not isinstance(data, list):
+                if last:
+                    raise ValueError("Server did not return an OpenAI-compatible model list")
+                continue
+            ids = sorted({model["id"] for model in data if isinstance(model, dict) and isinstance(model.get("id"), str) and model["id"]}, key=str.casefold)
+            if not ids:
+                raise ValueError("Server returned no models")
+            return candidate, [{"id": model_id, "name": model_id, "context_length": None, "pricing": {}} for model_id in ids]
+    raise ValueError("Server did not return an OpenAI-compatible model list")
+
+
 _catalog: list[dict[str, Any]] = []
 _catalog_expires = 0.0
 

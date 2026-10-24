@@ -31,6 +31,8 @@ export function AnimatedDialog({ open, onClose, dismissible = true, labelledBy, 
       data-state={open ? "open" : "closed"}
       aria-labelledby={labelledBy}
       onCancel={(event) => {
+        // React bubbles cancel through nested dialogs; only the dialog that received Escape should close.
+        if (event.target !== event.currentTarget) return;
         event.preventDefault();
         if (dismissible) onClose();
       }}

@@ -83,16 +83,73 @@
   margin-left: auto;
 }
 .emailBody {
-  margin-top: 6px;
+  margin-top: 8px;
+}
+.workspace .emailToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  margin-left: -8px;
+  border-color: transparent;
+  background: transparent;
   color: var(--chat-muted);
   font-size: 12px;
-}
-.emailBody summary {
   cursor: pointer;
+  transition:
+    background 180ms ease,
+    color 180ms ease;
+}
+.workspace .emailToggle:hover {
+  background: #eeeee7;
+  color: var(--chat-ink);
+}
+.emailToggle:focus-visible {
+  outline: 2px solid #507e62;
+  outline-offset: 2px;
+}
+.emailToggle svg {
+  flex-shrink: 0;
+  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.emailBody[data-open="true"] .emailToggle svg {
+  transform: rotate(90deg);
+}
+.emailPanel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    grid-template-rows 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 240ms ease,
+    visibility 320ms;
+}
+.emailBody[data-open="true"] .emailPanel {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+}
+.emailPanelClip {
+  min-height: 0;
+  overflow: hidden;
 }
 .emailBody .message {
+  margin: 6px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--chat-line);
+  border-radius: 10px;
+  background: #f5f5ef;
   color: var(--chat-ink);
-  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.65;
+}
+@media (prefers-reduced-motion: reduce) {
+  .emailToggle svg,
+  .emailPanel,
+  .workspace .emailToggle {
+    transition: none;
+  }
 }
 .kind {
   font-size: 12px;

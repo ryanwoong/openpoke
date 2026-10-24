@@ -20,6 +20,52 @@ function localDate(value: string | null, timezone: string | null) {
   return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:${part("second")}`;
 }
 
+function EmailBody({ body }: { body: string }) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+
+  return (
+    <div
+      className={styles.emailBody}
+      data-open={open}
+    >
+      <button
+        type="button"
+        className={styles.emailToggle}
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen(!open)}
+      >
+        <svg
+          viewBox="0 0 20 20"
+          width="16"
+          height="16"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="m7 4 6 6-6 6"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        {open ? "Hide email body" : "View email body"}
+      </button>
+      <div
+        id={panelId}
+        className={styles.emailPanel}
+        aria-hidden={!open}
+      >
+        <div className={styles.emailPanelClip}>
+          <p className={styles.message}>{body}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ItemDialog({ item, mode, onClose, onChange }: { item: Reminder; mode: "edit" | "cancel" | "approve"; onClose: () => void; onChange: (item: Reminder, change: ReminderChange) => Promise<Reminder> }) {
   const titleId = useId();
   const [startTime, setStartTime] = useState(localDate(item.next_trigger, item.timezone));
@@ -302,10 +348,7 @@ export function Reminders({ items, loading, error, onChange }: { items: Reminder
                 {item.kind === "email" && (
                   <>
                     <p className={styles.hint}>To: {item.recipient_email}</p>
-                    <details className={styles.emailBody}>
-                      <summary>View email body</summary>
-                      <p className={styles.message}>{item.body}</p>
-                    </details>
+                    <EmailBody body={item.body} />
                   </>
                 )}
                 <p className={styles.time}>

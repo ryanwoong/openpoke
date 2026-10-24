@@ -14,7 +14,6 @@ from .scheduling import PAYLOAD_PREFIX, decode_action
 from .conversation import get_conversation_log
 from .gmail import execute_gmail_tool, get_active_gmail_user_id
 
-
 UTC = timezone.utc
 
 
@@ -82,6 +81,13 @@ class TriggerScheduler:
 
     async def _execute_trigger(self, trigger: TriggerRecord) -> None:
         try:
+            current = self._service.get_trigger(trigger.id)
+            if current is None or current != trigger or current.status != "active" or not current.next_trigger:
+                return
+            claimed = self._service.update_if_unchanged(current, {"status": "running"})
+            if claimed is None:
+                return
+            trigger = claimed
             fired_at = _utc_now()
             action = decode_action(trigger.payload)
             if action is not None:
@@ -167,6 +173,7 @@ class TriggerScheduler:
         if trigger.recurrence_rule:
             self._service.schedule_next_occurrence(trigger, fired_at=fired_at)
         else:
+            self._service.update_trigger(trigger.id, agent_name=trigger.agent_name, status="paused")
             self._service.clear_next_fire(trigger.id, agent_name=trigger.agent_name)
 
     def _format_instructions(self, trigger: TriggerRecord, fired_at: datetime) -> str:

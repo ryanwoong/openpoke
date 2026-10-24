@@ -675,3 +675,33 @@
   font-size: 11px;
   line-height: 1.4;
 }
+
+.reminders-link {
+  position: relative;
+}
+.reminders-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  min-width: 25px;
+  height: 25px;
+  padding: 0 7px;
+  border-radius: 50px;
+  background: #e0e0d8;
+  color: #354036;
+  font-size: 12px;
+  font-weight: 650;
+}
+@media (max-width: 640px) {
+  .conversation-link > .reminders-badge {
+    display: inline-flex;
+    position: absolute;
+    top: 0;
+    right: -4px;
+    min-width: 19px;
+    height: 19px;
+    padding: 0 4px;
+    font-size: 10px;
+  }
+}

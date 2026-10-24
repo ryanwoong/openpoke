@@ -19,7 +19,6 @@ from .utils import (
     utc_now,
 )
 
-
 MISSED_TRIGGER_GRACE_PERIOD = timedelta(minutes=5)
 
 
@@ -86,11 +85,7 @@ class TriggerService:
             return None
 
         tz = resolve_timezone(timezone_name or existing.timezone)
-        start_reference = (
-            parse_iso(existing.start_time)
-            if existing.start_time
-            else utc_now()
-        )
+        start_reference = parse_iso(existing.start_time) if existing.start_time else utc_now()
         start_dt_local = coerce_start_datetime(start_time, tz, start_reference)
 
         fields: Dict[str, Any] = {}
@@ -102,9 +97,7 @@ class TriggerService:
         if status is not None:
             normalized_status = normalize_status(status)
             fields["status"] = normalized_status
-            status_changed_to_active = (
-                normalized_status == "active" and existing.status != "active"
-            )
+            status_changed_to_active = normalized_status == "active" and existing.status != "active"
         else:
             normalized_status = existing.status
 
@@ -113,27 +106,15 @@ class TriggerService:
         if timezone_name is not None:
             fields["timezone"] = getattr(tz, "key", "UTC")
 
-        schedule_inputs_changed = any(
-            value is not None for value in (recurrence_rule, start_time, timezone_name)
-        )
+        schedule_inputs_changed = any(value is not None for value in (recurrence_rule, start_time, timezone_name))
 
-        recurrence_source = (
-            recurrence_rule if recurrence_rule is not None else existing.recurrence_rule
-        )
+        recurrence_source = recurrence_rule if recurrence_rule is not None else existing.recurrence_rule
         if schedule_inputs_changed:
-            stored_recurrence = (
-                build_recurrence(recurrence_source, start_dt_local, tz)
-                if recurrence_source
-                else None
-            )
+            stored_recurrence = build_recurrence(recurrence_source, start_dt_local, tz) if recurrence_source else None
         else:
             stored_recurrence = recurrence_source
 
-        next_trigger_dt = (
-            parse_iso(existing.next_trigger)
-            if existing.next_trigger
-            else None
-        )
+        next_trigger_dt = parse_iso(existing.next_trigger) if existing.next_trigger else None
         now = utc_now()
         should_recompute_schedule = schedule_inputs_changed
 
@@ -161,9 +142,7 @@ class TriggerService:
                 and next_fire <= now
             ):
                 next_fire = now
-            fields["next_trigger"] = (
-                to_storage_timestamp(next_fire) if next_fire else None
-            )
+            fields["next_trigger"] = to_storage_timestamp(next_fire) if next_fire else None
             if schedule_inputs_changed:
                 fields["recurrence_rule"] = stored_recurrence
         elif schedule_inputs_changed:
@@ -180,12 +159,18 @@ class TriggerService:
         updated = self._store.update(trigger_id, agent_name, fields)
         return self._store.fetch_one(trigger_id, agent_name) if updated else existing
 
-    def list_triggers(self, *, agent_name: str) -> List[TriggerRecord]:
+    def list_triggers(self, *, agent_name: Optional[str] = None) -> List[TriggerRecord]:
         return self._store.list_for_agent(agent_name)
 
-    def get_due_triggers(
-        self, *, before: datetime, agent_name: Optional[str] = None
-    ) -> List[TriggerRecord]:
+    def get_trigger(self, trigger_id: int) -> Optional[TriggerRecord]:
+        return self._store.fetch_by_id(trigger_id)
+
+    def update_if_unchanged(self, record: TriggerRecord, fields: Dict[str, Any]) -> Optional[TriggerRecord]:
+        if not self._store.update_if_unchanged(record, fields):
+            return None
+        return self._store.fetch_by_id(record.id)
+
+    def get_due_triggers(self, *, before: datetime, agent_name: Optional[str] = None) -> List[TriggerRecord]:
         iso_cutoff = to_storage_timestamp(before)
         return self._store.fetch_due(agent_name, iso_cutoff)
 
@@ -215,6 +200,7 @@ class TriggerService:
         fields: Dict[str, Any] = {
             "next_trigger": to_storage_timestamp(next_fire) if next_fire else None,
             "last_error": None,
+            "status": "active" if next_fire else "completed",
         }
         if next_fire is None:
             fields["status"] = "completed"

@@ -9,10 +9,9 @@ from zoneinfo import ZoneInfo
 
 from ...logging_config import logger
 
-
 UTC = timezone.utc
 DEFAULT_STATUS = "active"
-VALID_STATUSES = {"active", "paused", "completed"}
+VALID_STATUSES = {"active", "paused", "completed", "cancelled", "running"}
 
 
 def utc_now() -> datetime:
@@ -76,9 +75,7 @@ def parse_datetime(timestamp: str, tz: ZoneInfo) -> datetime:
     return dt
 
 
-def coerce_start_datetime(
-    start_time: Optional[str], tz: ZoneInfo, fallback: datetime
-) -> datetime:
+def coerce_start_datetime(start_time: Optional[str], tz: ZoneInfo, fallback: datetime) -> datetime:
     """Return the desired start datetime in the agent's timezone."""
 
     if start_time:

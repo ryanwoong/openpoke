@@ -18,12 +18,16 @@ import { ExecutionMonitor } from "@/components/execution/ExecutionMonitor";
 
 import { toBubbles } from "@/lib/chatHistory";
 
+import { Reminders } from "@/components/reminders/Reminders";
+import { useReminders } from "@/components/reminders/useReminders";
+
 const POLL_INTERVAL_MS = 1500;
 
 export default function Page() {
   const { settings, setSettings } = useSettings();
-  const [activeView, setActiveView] = useState<"conversation" | "execution">("conversation");
+  const [activeView, setActiveView] = useState<"conversation" | "execution" | "reminders">("conversation");
   const [executionResetKey, setExecutionResetKey] = useState(0);
+  const reminders = useReminders(executionResetKey);
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -138,7 +142,7 @@ export default function Page() {
   }, [loadHistory]);
 
   useEffect(() => {
-    const syncView = () => setActiveView(window.location.hash === "#execution" ? "execution" : "conversation");
+    const syncView = () => setActiveView(window.location.hash === "#reminders" ? "reminders" : window.location.hash === "#execution" ? "execution" : "conversation");
     syncView();
     window.addEventListener("hashchange", syncView);
     return () => window.removeEventListener("hashchange", syncView);
@@ -230,6 +234,7 @@ export default function Page() {
         onOpenSettings={openSettings}
         activeView={activeView}
         onNavigate={setActiveView}
+        reminderCount={reminders.count}
       />
       <section
         id="conversation"
@@ -279,6 +284,21 @@ export default function Page() {
           spans={executionSpans}
           error={executionError}
         />
+      </section>
+      <section
+        id="reminders"
+        className="chat-main"
+        aria-label="Reminders workspace"
+        hidden={activeView !== "reminders"}
+      >
+        {activeView === "reminders" && (
+          <Reminders
+            items={reminders.items}
+            loading={reminders.loading}
+            error={reminders.error}
+            onChange={reminders.change}
+          />
+        )}
       </section>
       <SettingsModal
         open={open}

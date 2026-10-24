@@ -1,0 +1,11 @@
+# Reminders
+
+The left sidebar opens Reminders with Upcoming and History views. The badge counts scheduled, paused, waiting-for-approval, and currently running items across all execution agents. It disappears at zero. Completed, cancelled, and failed items appear in History without edit controls. The list and badge refresh every two seconds and when the window regains focus.
+
+Upcoming reminders and general tasks support editing their text and date/time. Email edits support recipient, subject, body, and date/time; every email edit clears the previous approval and pauses delivery. Review & approve displays the exact saved email and schedule before activating it. Paused general tasks can be resumed. Expired email approvals and resumes require a future time first. Date inputs use the item's displayed timezone, independent of the browser's timezone. Existing repeat rules are preserved; changing the time reanchors the rule at the chosen date.
+
+Cancellation preserves the item in History and stops future occurrences of recurring items. Chat cancellations also retain the cancelled status. Requests carry a version of the displayed record; atomic conditional updates reject stale edits and approvals. The scheduler claims an unchanged record before execution, preventing a queued stale snapshot from delivering an item after it was edited or cancelled. Running items cannot be changed through the page.
+
+The API is `GET /api/v1/reminders` and `PATCH /api/v1/reminders/{id}`, proxied by the web app. The page uses the existing trigger database, including records created before this feature. History contains saved task records, not a separate log of every occurrence of a recurring task. Clearing chat still clears these records, as documented in Scheduling. Backend availability and existing crash-delivery limitations still apply.
+
+Validation includes API tests for counts across agents, history, editing, timezone handling, cancellation, exact email re-approval, stale snapshots and concurrent edits, expired approvals, and recurring tasks. Browser checks cover navigation, editing, email review, cancellation/history, mobile layouts and dialogs, badge updates, hash reloads, and connection recovery with isolated fixture responses. No emails are sent by these checks.

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 
 from server.openrouter_client.client import OpenRouterError, request_chat_completion
+from server.model_settings import CompletionTarget
 
 search = importlib.import_module("server.agents.execution_agent.tasks.search_email.tool")
 
@@ -22,6 +23,11 @@ def tool_call(name, arguments):
 
 
 class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        provider = patch("server.openrouter_client.client.completion_target", return_value=CompletionTarget("OpenRouter", "test/model", None, None))
+        provider.start()
+        self.addCleanup(provider.stop)
+
     async def run_search(self):
         return await search._run_email_search(search_query="today", composio_user_id="user_test", model="test/model", api_key="test-key")
 
@@ -128,6 +134,14 @@ class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
                 await task
+
+    async def test_natural_language_search_accepts_a_keyless_local_provider(self):
+        run = AsyncMock(return_value=[])
+        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(
+            search, "_validate_openrouter_config", return_value=(True, None, "local-model")
+        ), patch.object(search, "_run_email_search", run):
+            self.assertEqual(await search.task_email_search("Find my receipts from last week"), [])
+        run.assert_awaited_once_with(search_query="Find my receipts from last week", composio_user_id="test-user", model="local-model", api_key=None)
 
     async def test_raw_tls_failure_is_identified_as_openrouter_failure(self):
         upstream = AsyncMock()

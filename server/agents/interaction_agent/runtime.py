@@ -12,6 +12,7 @@ from .tools import ToolResult, get_tool_schemas, handle_tool_call
 from ...config import get_settings
 from ...services.conversation import get_conversation_log, get_working_memory_log
 from ...openrouter_client import request_chat_completion
+from ...model_settings import model_provider_configured
 from ...logging_config import logger
 
 
@@ -60,8 +61,8 @@ class InteractionAgentRuntime:
         self.working_memory_log = get_working_memory_log()
         self.tool_schemas = get_tool_schemas()
 
-        if not self.api_key:
-            raise ValueError("OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable.")
+        if not model_provider_configured():
+            raise ValueError("No model provider configured. Set OPENROUTER_API_KEY or add an OpenAI-compatible model in Settings → Model.")
 
     # Main entry point for processing user messages through the LLM interaction loop
     @traced("interaction", lambda self, user_message, request_id=None: ("Interaction agent", {"prompt": user_message, "request_id": request_id, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]}))

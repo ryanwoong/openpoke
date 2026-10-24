@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from server.config import get_settings
 from server.logging_config import logger
+from server.model_settings import model_provider_configured
 from server.openrouter_client import request_chat_completion
 from server.services.execution import get_execution_agent_logs
 from server.services.gmail import (
@@ -34,7 +35,7 @@ from .system_prompt import get_system_prompt
 MAX_LLM_ITERATIONS = 8
 MAX_SEARCH_PAGES = 10
 ERROR_GMAIL_NOT_CONNECTED = "Gmail not connected. Please connect Gmail in settings first."
-ERROR_OPENROUTER_NOT_CONFIGURED = "OpenRouter API key not configured. Set OPENROUTER_API_KEY."
+ERROR_OPENROUTER_NOT_CONFIGURED = "No model provider configured. Set OPENROUTER_API_KEY or add an OpenAI-compatible model in Settings → Model."
 ERROR_EMPTY_QUERY = "search_query must not be empty"
 ERROR_QUERY_REQUIRED = "query parameter is required"
 ERROR_MESSAGE_IDS_REQUIRED = "message_ids parameter is required"
@@ -73,13 +74,12 @@ def _validate_gmail_connection() -> Optional[str]:
     return get_active_gmail_user_id()
 
 
-def _validate_openrouter_config() -> Tuple[Optional[str], Optional[str]]:
-    """Validate OpenRouter configuration and return (api_key, model) or (None, error)."""
+def _validate_openrouter_config() -> Tuple[bool, Optional[str], str]:
+    """Validate model provider configuration and return (configured, api_key, model_or_error)."""
     settings = get_settings()
-    api_key = settings.openrouter_api_key
-    if not api_key:
-        return None, ERROR_OPENROUTER_NOT_CONFIGURED
-    return api_key, settings.execution_agent_search_model
+    if not model_provider_configured():
+        return False, None, ERROR_OPENROUTER_NOT_CONFIGURED
+    return True, settings.openrouter_api_key, settings.execution_agent_search_model
 
 
 # Return task tool callables
@@ -114,9 +114,9 @@ async def task_email_search(search_query: str) -> Any:
             return {"error": result.error}
         return [email.model_dump(mode="json", exclude_none=True) for email in result.messages]
 
-    api_key, model_or_error = _validate_openrouter_config()
-    if not api_key:
-        logger.error(f"[EMAIL_SEARCH] OpenRouter not configured: {model_or_error}")
+    configured, api_key, model_or_error = _validate_openrouter_config()
+    if not configured:
+        logger.error(f"[EMAIL_SEARCH] Model provider not configured: {model_or_error}")
         return {"error": model_or_error}
 
     try:
@@ -139,7 +139,7 @@ async def _run_email_search(
     search_query: str,
     composio_user_id: str,
     model: str,
-    api_key: str,
+    api_key: Optional[str],
 ) -> List[Dict[str, Any]]:
     """Execute the main email search orchestration loop."""
     messages: List[Dict[str, Any]] = [{"role": "user", "content": _render_user_message(search_query)}]

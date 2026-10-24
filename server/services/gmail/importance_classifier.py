@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from .processing import ProcessedEmail
 from ...config import get_settings
 from ...logging_config import logger
+from ...model_settings import model_provider_configured
 from ...openrouter_client import OpenRouterError, request_chat_completion
 
 
@@ -84,8 +85,8 @@ async def classify_email_importance(email: ProcessedEmail) -> Optional[str]:
     api_key = settings.openrouter_api_key
     model = settings.email_classifier_model
 
-    if not api_key:
-        logger.warning("Skipping importance check; OpenRouter API key missing")
+    if not model_provider_configured():
+        logger.warning("Skipping importance check; no model provider configured")
         return None
 
     user_payload = _format_email_payload(email)

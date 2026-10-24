@@ -1,8 +1,9 @@
+import { chatRequestStatus } from "./chatRequestStatus";
 import type { ExecutionSpan } from "../components/execution/executionGraph";
 
 export type EmailSummary = { subject: string; sender: string };
 export type ActivityStep = { id: string; label: string; status: "running" | "completed" | "failed" | "cancelled" | "interrupted"; emails?: EmailSummary[] };
-export type ChatActivity = { requestId: string; userText: string; occurrence: number; steps: ActivityStep[] };
+export type ChatActivity = { requestId: string; userText: string; occurrence: number; steps: ActivityStep[]; status?: "running" | "completed" | "failed" | "timed_out" | "cancelled"; phase?: string };
 
 const labels: Record<string, [string, string]> = {
   task_email_search: ["Searching your inbox…", "Searched your inbox"],
@@ -68,7 +69,11 @@ export function updateChatActivity(activities: ChatActivity[], spans: ExecutionS
       .filter((step): step is ActivityStep => step !== null);
     const merged = new Map(activity.steps.map((step) => [step.id, step]));
     for (const step of steps) merged.set(step.id, step);
-    return { ...activity, steps: [...merged.values()] };
+    const progress = chatRequestStatus(spans, activity.requestId);
+    const errors = run.map((span) => String(record(span.output).error || ""));
+    const status: ChatActivity["status"] = progress?.status === "failed" ? (errors.some((error) => /timed out/i.test(error)) ? "timed_out" : errors.some((error) => /cancelled by user/i.test(error)) ? "cancelled" : "failed") : progress?.status;
+    const phase = status !== "running" ? undefined : run.some((span) => span.status === "running" && span.label.startsWith("Context compaction")) ? "Compacting results…" : run.some((span) => span.status === "running" && span.kind === "tool" && span.label === "task_email_search") ? "Searching emails…" : run.some((span) => span.status === "running" && span.kind === "execution") ? "Analyzing results…" : "Writing answer…";
+    return { ...activity, steps: [...merged.values()], status, phase };
   });
 }
 
@@ -86,22 +91,23 @@ export function restoreChatActivity(raw: string | null): ChatActivity[] {
           Array.isArray(item?.steps) &&
           item.steps.every((step: ActivityStep) => typeof step?.id === "string" && typeof step?.label === "string" && ["running", "completed", "failed", "cancelled", "interrupted"].includes(step?.status) && (step.emails === undefined || (Array.isArray(step.emails) && step.emails.length <= 50 && step.emails.every((email) => typeof email?.subject === "string" && typeof email?.sender === "string")))),
       )
-      .map((activity) => ({ ...activity, steps: activity.steps.map((step) => (step.status === "running" ? { ...step, status: "interrupted", label: "Activity interrupted; waiting to reconnect" } : step)) }));
+      .map((activity) => ({ ...activity, ...(activity.status === "running" ? { status: undefined, phase: undefined } : {}), steps: activity.steps.map((step) => (step.status === "running" ? { ...step, status: "interrupted", label: "Activity interrupted; waiting to reconnect" } : step)) }));
   } catch {
     return [];
   }
 }
 
-export function chatActivityPositions(messages: ReadonlyArray<{ role: string; text: string }>, activities: ChatActivity[]): Map<number, ChatActivity[]> {
+export function chatActivityPositions(messages: ReadonlyArray<{ role: string; text: string; requestId?: string | null }>, activities: ChatActivity[]): Map<number, ChatActivity[]> {
   const positions = new Map<number, ChatActivity[]>();
   const occurrences = new Map<string, number>();
   messages.forEach((message, index) => {
     if (message.role !== "user") return;
     const occurrence = (occurrences.get(message.text) || 0) + 1;
     occurrences.set(message.text, occurrence);
-    for (const activity of activities.filter((item) => item.userText === message.text && item.occurrence === occurrence && item.steps.length)) {
+    for (const activity of activities.filter((item) => (message.requestId ? item.requestId === message.requestId : item.userText === message.text && item.occurrence === occurrence) && (item.steps.length || item.phase || ["failed", "timed_out", "cancelled"].includes(item.status || "")))) {
       const nextUserIndex = messages.findIndex((next, nextIndex) => nextIndex > index && next.role === "user");
-      const position = nextUserIndex >= 0 ? nextUserIndex : messages.length;
+      const lastReply = message.requestId ? messages.reduce((last, entry, entryIndex) => (entry.requestId === message.requestId ? entryIndex : last), index) : -1;
+      const position = lastReply >= 0 ? lastReply + 1 : nextUserIndex >= 0 ? nextUserIndex : messages.length;
       positions.set(position, [...(positions.get(position) || []), activity]);
     }
   });

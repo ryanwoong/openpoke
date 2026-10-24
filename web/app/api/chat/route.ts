@@ -44,6 +44,7 @@ export async function POST(req: Request) {
     system: "",
     messages: uiToOpenAIContent(messages),
     stream: false,
+    retry_of: typeof body.retry_of === "string" ? body.retry_of : undefined,
     request_id: typeof body.request_id === "string" ? body.request_id : undefined,
   };
 

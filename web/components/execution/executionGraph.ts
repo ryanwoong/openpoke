@@ -37,7 +37,7 @@ function inputText(span: ExecutionSpan, key: string) {
 export function activityLabel(span: ExecutionSpan) {
   if (span.kind === "interaction") return inputText(span, "prompt") || (inputText(span, "agent_message") ? "Preparing the reply" : "Interaction agent");
   if (span.kind === "execution") return span.label;
-  if (span.kind === "model") return "Requesting a model response";
+  if (span.kind === "model") return span.label.startsWith("Context compaction") ? "Compacting results" : "Requesting a model response";
   const labels: Record<string, string> = { GMAIL_FETCH_EMAILS: "Checking inbox", GMAIL_GET_PROFILE: "Checking Gmail connection", send_message_to_agent: "Delegating work", send_message_to_user: "Delivering a reply", wait: "Waiting for delegated work" };
   const operation = span.label.replace(/^Gmail · /, "");
   return labels[operation] || operation.replace(/[_-]/g, " ").replace(/^gmail /i, "Gmail · ");

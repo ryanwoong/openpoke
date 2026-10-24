@@ -43,3 +43,20 @@ test("repeated messages retain their individual send times through polling", () 
   assert.notEqual(first[0].timestamp, first[1].timestamp);
   assert.deepEqual(toBubbles(payload, first), first);
 });
+
+test("keeps identical replies from different requests and scheduled updates distinct", () => {
+  const payload = {
+    messages: [
+      { role: "assistant", content: "Done", request_id: "first" },
+      { role: "assistant", content: "Done", source: "scheduled" },
+      { role: "assistant", content: "Done", request_id: "second" },
+    ],
+  };
+  const original = toBubbles(payload);
+  const reordered = toBubbles({ messages: [...payload.messages].reverse() }, original);
+  assert.equal(reordered[0].id, original[2].id);
+  assert.equal(reordered[1].id, original[1].id);
+  assert.equal(reordered[2].id, original[0].id);
+  assert.equal(reordered[0].requestId, "second");
+  assert.equal(reordered[1].source, "scheduled");
+});

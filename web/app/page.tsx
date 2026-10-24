@@ -166,6 +166,7 @@ export default function Page() {
         id: `user-${requestId}`,
         role: "user",
         text: trimmed,
+        timestamp: new Date().toISOString(),
       };
       setMessages((prev) => {
         const newMessages = [...prev, userMessage];
@@ -248,6 +249,7 @@ export default function Page() {
         />
         <ChatMessages
           messages={messages}
+          timeZone={settings.timezone || undefined}
           activities={activities}
           isLoadingHistory={isLoadingHistory}
           isWaitingForResponse={isWaitingForResponse}

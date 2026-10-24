@@ -24,7 +24,14 @@ def sanitize(value, depth=0):
     if depth > 5:
         return "[depth limit]"
     if isinstance(value, dict):
-        return {str(key): "[redacted]" if str(key).lower() == "token" or str(key).lower().endswith("_token") or any(secret in str(key).lower() for secret in _SECRET_KEYS) else sanitize(item, depth + 1) for key, item in list(value.items())[:50]}
+        return {
+            str(key): (
+                "[redacted]"
+                if str(key).lower() == "token" or str(key).lower().endswith("_token") or any(secret in str(key).lower() for secret in _SECRET_KEYS)
+                else sanitize(item, depth + 1)
+            )
+            for key, item in list(value.items())[:50]
+        }
     if isinstance(value, (list, tuple)):
         return [sanitize(item, depth + 1) for item in value[:50]]
     if value is None or isinstance(value, (bool, int, float)):
@@ -43,7 +50,18 @@ class TraceStore:
         with self._lock:
             if parent and parent["id"] not in self._spans:
                 parent = None
-            span = {"id": identifier, "run_id": parent["run_id"] if parent else identifier, "parent_id": parent["id"] if parent else None, "kind": kind, "label": str(label)[:200], "status": "running", "started_at": datetime.now(timezone.utc).isoformat(), "ended_at": None, "input": sanitize(detail), "output": None}
+            span = {
+                "id": identifier,
+                "run_id": parent["run_id"] if parent else identifier,
+                "parent_id": parent["id"] if parent else None,
+                "kind": kind,
+                "label": str(label)[:200],
+                "status": "running",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "ended_at": None,
+                "input": sanitize(detail),
+                "output": None,
+            }
             self._spans[identifier] = span
             # Evict whole inactive runs so retained graphs never lose their parents.
             while len(self._spans) > self.limit:
@@ -68,6 +86,11 @@ class TraceStore:
 
 
 trace_store = TraceStore()
+
+
+def current_run_id():
+    span = _current_span.get()
+    return span["run_id"] if span else None
 
 
 def traced(kind, describe):

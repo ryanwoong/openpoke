@@ -10,6 +10,8 @@ from typing import Dict, List, Optional
 
 from .runtime import ExecutionAgentRuntime, ExecutionResult
 from ...logging_config import logger
+from ...config import get_settings
+from ...execution_trace import current_run_id
 
 
 @dataclass
@@ -37,11 +39,11 @@ class ExecutionBatchManager:
     """Run execution agents and deliver their combined outcome."""
 
     # Initialize batch manager with timeout and coordination state for execution agents
-    def __init__(self, timeout_seconds: int = 90) -> None:
-        self.timeout_seconds = timeout_seconds
+    def __init__(self, timeout_seconds: Optional[float] = None) -> None:
+        self.timeout_seconds = timeout_seconds if timeout_seconds is not None else get_settings().execution_timeout_seconds
         self._pending: Dict[str, PendingExecution] = {}
         self._batch_lock = asyncio.Lock()
-        self._batch_state: Optional[_BatchState] = None
+        self._batch_states: Dict[str, _BatchState] = {}
 
     # Run execution agent with timeout handling and batch coordination for interaction agent
     async def execute_agent(
@@ -72,7 +74,7 @@ class ExecutionBatchManager:
                 agent_name=agent_name,
                 success=False,
                 response=f"Execution timed out after {self.timeout_seconds} seconds",
-                error="Timeout",
+                error=f"Execution timed out after {self.timeout_seconds:g} seconds",
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception(f"[{agent_name}] Execution failed unexpectedly")
@@ -85,6 +87,10 @@ class ExecutionBatchManager:
         finally:
             self._pending.pop(request_id, None)
 
+        result.instructions = instructions
+        if not result.success and not result.user_response:
+            detail = result.error or result.response or "The task could not be completed."
+            result.user_response = f"I couldn't finish this task: {instructions}\n\n{detail}. I don't have a verified result for this request."
         await self._complete_execution(batch_id, result, agent_name)
         return result
 
@@ -98,13 +104,9 @@ class ExecutionBatchManager:
         """Attach a new execution to the active batch, opening one when required."""
 
         async with self._batch_lock:
-            if self._batch_state is None:
-                batch_id = str(uuid.uuid4())
-                self._batch_state = _BatchState(batch_id=batch_id)
-            else:
-                batch_id = self._batch_state.batch_id
-
-            self._batch_state.pending += 1
+            batch_id = current_run_id() or request_id
+            state = self._batch_states.setdefault(batch_id, _BatchState(batch_id=batch_id))
+            state.pending += 1
             self._pending[request_id] = PendingExecution(
                 request_id=request_id,
                 agent_name=agent_name,
@@ -127,7 +129,7 @@ class ExecutionBatchManager:
         verified_replies: List[str] = []
 
         async with self._batch_lock:
-            state = self._batch_state
+            state = self._batch_states.get(batch_id)
             if state is None or state.batch_id != batch_id:
                 logger.warning(f"[{agent_name}] Dropping result for unknown batch")
                 return
@@ -140,7 +142,7 @@ class ExecutionBatchManager:
                 dispatch_payload = self._format_batch_payload([entry for entry in state.results if not entry.user_response])
                 agent_names = [entry.agent_name for entry in state.results]
                 logger.info(f"Execution batch completed: {', '.join(agent_names)}")
-                self._batch_state = None
+                self._batch_states.pop(batch_id, None)
 
         if verified_replies:
             from ...services.conversation import get_conversation_log
@@ -171,7 +173,7 @@ class ExecutionBatchManager:
 
         self._pending.clear()
         async with self._batch_lock:
-            self._batch_state = None
+            self._batch_states.clear()
 
     # Format multiple execution results into single message for interaction agent
     def _format_batch_payload(self, results: List[ExecutionResult]) -> str:
@@ -181,7 +183,8 @@ class ExecutionBatchManager:
         for result in results:
             status = "SUCCESS" if result.success else "FAILED"
             response_text = (result.response or "(no response provided)").strip()
-            entries.append(f"[{status}] {result.agent_name}: {response_text}")
+            task_context = f"\nTask: {result.instructions}" if result.instructions else ""
+            entries.append(f"[{status}] {result.agent_name}{task_context}\nResult: {response_text}")
         return "\n".join(entries)
 
     # Forward combined execution results to interaction agent for user response generation

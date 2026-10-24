@@ -26,6 +26,7 @@ class ExecutionResult:
     error: Optional[str] = None
     tools_executed: List[str] = None
     user_response: Optional[str] = None
+    instructions: Optional[str] = None
 
 
 class ExecutionAgentRuntime:
@@ -46,7 +47,13 @@ class ExecutionAgentRuntime:
             raise ValueError("OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable.")
 
     # Main execution loop for running agent with LLM calls and tool execution
-    @traced("execution", lambda self, instructions, scheduling=False: (self.agent.name, {"instructions": instructions, "access": ["Agent execution history", "Gmail connection status"]}))
+    @traced(
+        "execution",
+        lambda self, instructions, scheduling=False: (
+            self.agent.name,
+            {"instructions": instructions, "access": ["Agent execution history", "Gmail connection status"]},
+        ),
+    )
     async def execute(self, instructions: str, scheduling: bool = False) -> ExecutionResult:
         """Execute the agent with given instructions."""
         try:
@@ -59,6 +66,7 @@ class ExecutionAgentRuntime:
                 self.tool_schemas = [SCHEDULING_SCHEMA]
                 self.tool_registry = {"scheduleTask": self.tool_registry["scheduleTask"]}
             tools_executed: List[str] = []
+            tool_errors: Dict[str, str] = {}
             final_response: Optional[str] = None
             scheduling_attempted = scheduling
             scheduling_error = "The model did not provide a valid task and future time. Please specify both."
@@ -85,7 +93,12 @@ class ExecutionAgentRuntime:
                 if not parsed_tool_calls:
                     final_response = assistant_entry["content"] or "No action required."
                     if scheduling and iteration == 0:
-                        messages.append({"role": "user", "content": "The scheduling tool is available in this request. Use scheduleTask if the task and future time are clear. Otherwise explain which details are missing. Do not claim a reminder was scheduled without calling the tool."})
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "The scheduling tool is available in this request. Use scheduleTask if the task and future time are clear. Otherwise explain which details are missing. Do not claim a reminder was scheduled without calling the tool.",
+                            }
+                        )
                         continue
                     if scheduling_attempted:
                         final_response = "Nothing was scheduled. " + scheduling_error
@@ -116,6 +129,7 @@ class ExecutionAgentRuntime:
                     success, result = await self._execute_tool(tool_name, tool_args)
 
                     if success:
+                        tool_errors.pop(tool_name, None)
                         logger.info(f"[{self.agent.name}] Tool {tool_name} completed successfully")
                         record_payload = self._safe_json_dump(result)
                     else:
@@ -123,6 +137,7 @@ class ExecutionAgentRuntime:
                         logger.warning(f"[{self.agent.name}] Tool {tool_name} failed: {error_detail}")
                         record_payload = error_detail
                         scheduling_error = str(error_detail)
+                        tool_errors[tool_name] = str(error_detail)
                         if tool_name in ("scheduleTask", "createTrigger", "updateTrigger"):
                             schedule_errors.append(scheduling_error)
 
@@ -141,7 +156,14 @@ class ExecutionAgentRuntime:
                 if verified_messages:
                     final_response = "\n\n".join(verified_messages + [f"A schedule could not be saved: {error}" for error in schedule_errors])
                     self.agent.record_response(final_response)
-                    return ExecutionResult(agent_name=self.agent.name, success=not schedule_errors, response=final_response, error="; ".join(schedule_errors) or None, tools_executed=tools_executed, user_response=final_response)
+                    return ExecutionResult(
+                        agent_name=self.agent.name,
+                        success=not schedule_errors,
+                        response=final_response,
+                        error="; ".join(schedule_errors) or None,
+                        tools_executed=tools_executed,
+                        user_response=final_response,
+                    )
 
             else:
                 raise RuntimeError("Reached tool iteration limit without final response")
@@ -149,9 +171,20 @@ class ExecutionAgentRuntime:
             if final_response is None:
                 raise RuntimeError("LLM did not return a final response")
 
+            if tool_errors and not scheduling_attempted:
+                detail = "; ".join(f"{name}: {error}" for name, error in tool_errors.items())
+                final_response = f"The task could not be completed: {detail}"
+                self.agent.record_response(final_response)
+                return ExecutionResult(agent_name=self.agent.name, success=False, response=final_response, error=detail, tools_executed=tools_executed)
             self.agent.record_response(final_response)
 
-            return ExecutionResult(agent_name=self.agent.name, success=not scheduling_attempted, response=final_response, error=scheduling_error if scheduling_attempted else None, tools_executed=tools_executed)
+            return ExecutionResult(
+                agent_name=self.agent.name,
+                success=not scheduling_attempted,
+                response=final_response,
+                error=scheduling_error if scheduling_attempted else None,
+                tools_executed=tools_executed,
+            )
 
         except Exception as e:
             logger.error(f"[{self.agent.name}] Execution failed: {e}")

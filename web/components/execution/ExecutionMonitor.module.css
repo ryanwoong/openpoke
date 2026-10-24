@@ -207,6 +207,13 @@
   border-radius: 50%;
   background: #abb6aa;
 }
+.nodeStatus[data-status="completed"] {
+  background: var(--status-completed-background);
+  color: var(--status-completed-color);
+}
+.nodeStatus[data-status="completed"]::before {
+  background: var(--status-completed-indicator);
+}
 .nodeStatus[data-status="running"] {
   background: #edf5ef;
   color: #477157;
@@ -612,9 +619,11 @@ button.historyItem:hover,
   border-radius: 50%;
   background: #bec4b9;
 }
-.feedItem small[data-status="running"]::before,
-.feedItem small[data-status="completed"]::before {
+.feedItem small[data-status="running"]::before {
   background: #438159;
+}
+.feedItem small[data-status="completed"]::before {
+  background: var(--status-completed-indicator);
 }
 .feedItem small[data-status="failed"]::before,
 .feedItem small[data-status="cancelled"]::before {
@@ -622,6 +631,10 @@ button.historyItem:hover,
 }
 .historyList {
   animation: sidebar-content-in 160ms var(--motion-ease) both;
+}
+.itemMeta [data-status="completed"],
+.feedItem [data-status="completed"] {
+  color: var(--status-completed-color);
 }
 .itemMeta [data-status="running"],
 .feedItem [data-status="running"] {

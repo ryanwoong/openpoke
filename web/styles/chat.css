@@ -566,6 +566,11 @@
   line-height: 1;
 }
 
+.chat-activity-completed .chat-activity-icon {
+  background: var(--status-completed-background);
+  color: var(--status-completed-color);
+}
+
 .chat-activity-running .chat-activity-icon {
   background: transparent;
   border: 2px solid #d8e5dd;

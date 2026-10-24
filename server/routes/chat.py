@@ -64,6 +64,9 @@ def clear_history() -> ChatHistoryClearResponse:
     from ..openrouter_client.context import context_compactor
 
     context_compactor.clear()
+    from ..services.conversation.read_checkpoints import read_checkpoints
+
+    read_checkpoints.clear()
 
     return ChatHistoryClearResponse()
 

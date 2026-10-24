@@ -12,6 +12,7 @@ from uuid import uuid4
 class ChatRequestContext:
     request_id: str
     prompt: str
+    retry_of: str | None = None
     deadline: float | None = None
     tasks: set[asyncio.Task] = field(default_factory=set)
     timer: asyncio.TimerHandle | None = None
@@ -74,8 +75,8 @@ def clear_requests():
 
 
 @contextmanager
-def request_scope(request_id: str | None, prompt: str, *, timeout_seconds: float | None = None):
-    context = ChatRequestContext(request_id or uuid4().hex, prompt, deadline=time.monotonic() + timeout_seconds if timeout_seconds else None)
+def request_scope(request_id: str | None, prompt: str, *, timeout_seconds: float | None = None, retry_of: str | None = None):
+    context = ChatRequestContext(request_id or uuid4().hex, prompt, retry_of=retry_of, deadline=time.monotonic() + timeout_seconds if timeout_seconds else None)
     token = current_request.set(context)
     try:
         owner = asyncio.current_task()

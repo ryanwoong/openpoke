@@ -12,6 +12,7 @@ from ...config import get_settings
 from ...logging_config import logger
 from ...models import ChatMessage
 from .request_context import current_request
+from .read_checkpoints import read_checkpoints
 from ...utils.timezones import now_in_user_timezone
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,8 @@ def _default_formatter(tag: str, timestamp: str, payload: str) -> str:
     encoded = _encode_payload(payload)
     request = current_request.get()
     attribute = f' request_id="{quote(request.request_id, safe="")}"' if request and tag != "scheduled_update" and not scheduled_delivery.get() else ""
+    if tag == "task_failure" and request and request.read_only and read_checkpoints.available(request.request_id):
+        attribute += ' retryable="true"'
     return f'<{tag} timestamp="{timestamp}"{attribute}>{encoded}</{tag}>\n'
 
 
@@ -126,10 +129,10 @@ class ConversationLog:
             item = self._parse_line(line)
             if item is not None:
                 attributes = dict(_ATTR_PATTERN.findall(line[: line.find(">")]))
-                yield (*item, unquote(unescape(attributes["request_id"])) if "request_id" in attributes else None)
+                yield (*item, unquote(unescape(attributes["request_id"])) if "request_id" in attributes else None, attributes.get("retryable") == "true")
 
     def iter_entries(self) -> Iterator[Tuple[str, str, str]]:
-        for tag, timestamp, payload, _ in self._iter_records():
+        for tag, timestamp, payload, _, _ in self._iter_records():
             yield tag, timestamp, payload
 
     def load_transcript(self) -> str:
@@ -203,7 +206,7 @@ class ConversationLog:
 
     def to_chat_messages(self) -> List[ChatMessage]:
         messages: List[ChatMessage] = []
-        for tag, timestamp, payload, request_id in self._iter_records():
+        for tag, timestamp, payload, request_id, retryable in self._iter_records():
             if tag in ("user_message", "poke_reply", "scheduled_update", "task_failure"):
                 messages.append(
                     ChatMessage(
@@ -212,6 +215,7 @@ class ConversationLog:
                         timestamp=timestamp or None,
                         source="scheduled" if tag == "scheduled_update" else "failure" if tag == "task_failure" else None,
                         request_id=request_id,
+                        retryable=retryable,
                     )
                 )
         return messages

@@ -70,14 +70,14 @@ class InteractionAgentRuntime:
     # Main entry point for processing user messages through the LLM interaction loop
     @traced(
         "interaction",
-        lambda self, user_message, request_id=None: (
+        lambda self, user_message, request_id=None, retry_of=None: (
             "Interaction agent",
             {"prompt": user_message, "request_id": request_id, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]},
         ),
     )
-    async def execute(self, user_message: str, request_id: Optional[str] = None) -> InteractionResult:
+    async def execute(self, user_message: str, request_id: Optional[str] = None, retry_of: Optional[str] = None) -> InteractionResult:
         """Handle a user-authored message."""
-        with request_scope(request_id, user_message, timeout_seconds=get_settings().execution_timeout_seconds):
+        with request_scope(request_id, user_message, timeout_seconds=get_settings().execution_timeout_seconds, retry_of=retry_of):
             return await self._execute_user_message(user_message)
 
     async def _execute_user_message(self, user_message: str) -> InteractionResult:
@@ -110,6 +110,9 @@ class InteractionAgentRuntime:
                 "The current user message is the only authorization for new work. Do not restart failed or historical tasks "
                 "in response to greetings or unrelated messages. Earlier answers are not evidence for a fresh search."
             )
+            context = current_request.get()
+            if context and context.retry_of:
+                system_prompt += " This is an explicit retry using saved email results when available. Do not describe reused results as a newly fetched search; identify them as saved results."
             messages = prepare_message_with_history(user_message, transcript_before, message_type="user")
 
             logger.info("Processing user message through interaction agent")

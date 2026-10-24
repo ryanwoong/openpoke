@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 from ...execution_trace import traced
 from ...services.conversation.request_context import current_request
+from ...services.conversation.read_checkpoints import read_checkpoints
+from ...services.gmail import get_active_gmail_user_id
 
 from .agent import ExecutionAgent
 from .tools.scheduling import SCHEMA as SCHEDULING_SCHEMA
@@ -271,6 +273,18 @@ class ExecutionAgentRuntime:
         context = current_request.get()
         if context and context.stopped_reason:
             raise asyncio.CancelledError()
+        mailbox = get_active_gmail_user_id() if tool_name == "task_email_search" and context else None
+        if context and context.retry_of and tool_name != "task_email_search":
+            return False, {"error": "Saved-result retries only permit email searches. Start a new request for actions that change data."}
+        if context and tool_name != "task_email_search":
+            context.read_only = False
+            read_checkpoints.invalidate(context.request_id)
+        if mailbox:
+            found, cached = read_checkpoints.get(tool_name, arguments, mailbox)
+            if found:
+                read_checkpoints.put(tool_name, arguments, mailbox, cached)
+                logger.info("Reusing completed email read for request %s", context.request_id)
+                return True, cached
         tool_func = self.tool_registry.get(tool_name)
         if not tool_func:
             return False, {"error": f"Unknown tool: {tool_name}"}
@@ -284,6 +298,8 @@ class ExecutionAgentRuntime:
                 result = await result
             if isinstance(result, dict) and (result.get("error") or result.get("success") is False or result.get("successful") is False):
                 return False, {"error": result.get("error") or "Tool reported failure"}
+            if mailbox:
+                read_checkpoints.put(tool_name, arguments, mailbox, result)
             return True, result
         except Exception as e:
             return False, {"error": str(e)}

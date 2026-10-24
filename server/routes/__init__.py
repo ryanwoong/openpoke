@@ -7,7 +7,10 @@ from .gmail import router as gmail_router
 from .meta import router as meta_router
 from .model_settings import router as model_settings_router
 
+from .reminders import router as reminders_router
+
 api_router = APIRouter(prefix="/api/v1")
+api_router.include_router(reminders_router)
 api_router.include_router(meta_router)
 api_router.include_router(chat_router)
 api_router.include_router(gmail_router)

@@ -79,10 +79,7 @@ class TriggerStore:
         if not fields:
             return False
         assignments = ", ".join(f"{key} = :{key}" for key in fields.keys())
-        sql = (
-            f"UPDATE triggers SET {assignments}, updated_at = :updated_at"
-            " WHERE id = :trigger_id AND agent_name = :agent_name"
-        )
+        sql = f"UPDATE triggers SET {assignments}, updated_at = :updated_at" " WHERE id = :trigger_id AND agent_name = :agent_name"
         payload = {
             **fields,
             "updated_at": to_storage_timestamp(utc_now()),
@@ -93,21 +90,32 @@ class TriggerStore:
             cursor = conn.execute(sql, payload)
             return cursor.rowcount > 0
 
-    def list_for_agent(self, agent_name: str) -> List[TriggerRecord]:
+    def list_for_agent(self, agent_name: Optional[str]) -> List[TriggerRecord]:
         with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM triggers WHERE agent_name = ? ORDER BY next_trigger IS NULL, next_trigger",
-                (agent_name,),
-            ).fetchall()
+            query = "SELECT * FROM triggers"
+            params = ()
+            if agent_name is not None:
+                query += " WHERE agent_name = ?"
+                params = (agent_name,)
+            rows = conn.execute(query + " ORDER BY next_trigger IS NULL, next_trigger", params).fetchall()
         return [self._row_to_record(row) for row in rows]
 
-    def fetch_due(
-        self, agent_name: Optional[str], before_iso: str
-    ) -> List[TriggerRecord]:
-        sql = (
-            "SELECT * FROM triggers WHERE status = 'active' AND next_trigger IS NOT NULL"
-            " AND next_trigger <= ?"
-        )
+    def fetch_by_id(self, trigger_id: int) -> Optional[TriggerRecord]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM triggers WHERE id = ?", (trigger_id,)).fetchone()
+        return self._row_to_record(row) if row else None
+
+    def update_if_unchanged(self, record: TriggerRecord, fields: Dict[str, Any]) -> bool:
+        assignments = ", ".join(f"{key} = :{key}" for key in fields)
+        expected = record.model_dump()
+        conditions = " AND ".join(f"{key} IS :expected_{key}" for key in expected)
+        params = {**fields, "updated_at": to_storage_timestamp(utc_now()), **{f"expected_{key}": value for key, value in expected.items()}}
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(f"UPDATE triggers SET {assignments}, updated_at = :updated_at WHERE {conditions}", params)
+            return cursor.rowcount == 1
+
+    def fetch_due(self, agent_name: Optional[str], before_iso: str) -> List[TriggerRecord]:
+        sql = "SELECT * FROM triggers WHERE status = 'active' AND next_trigger IS NOT NULL" " AND next_trigger <= ?"
         params: List[Any] = [before_iso]
         if agent_name:
             sql += " AND agent_name = ?"

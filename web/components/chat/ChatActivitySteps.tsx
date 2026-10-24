@@ -1,10 +1,13 @@
 import React, { useEffect, useRef } from "react";
-import type { ActivityStep } from "../../lib/chatActivity";
+import type { ActivityStep, ChatActivity } from "../../lib/chatActivity";
 
-export function ChatActivitySteps({ steps, isPreparingReply = false }: { steps: ActivityStep[]; isPreparingReply?: boolean }) {
-  if (!steps.length) return null;
+export function ChatActivitySteps({ steps, isPreparingReply = false, phase, outcome }: { steps: ActivityStep[]; isPreparingReply?: boolean; phase?: string; outcome?: ChatActivity["status"] }) {
+  if (!steps.length && !phase && !outcome) return null;
   const running = steps.some((step) => step.status === "running");
-  const visibleSteps: ActivityStep[] = isPreparingReply && !running ? [...steps, { id: "preparing-reply", label: "Preparing your reply…", status: "running" }] : steps;
+  const visibleSteps: ActivityStep[] = phase ? [...steps, { id: "current-phase", label: phase, status: "running" }] : isPreparingReply && !running ? [...steps, { id: "preparing-reply", label: "Preparing your reply…", status: "running" }] : steps;
+  const completed = steps.filter((step) => step.status === "completed").length;
+  const stopped = outcome && ["failed", "timed_out", "cancelled"].includes(outcome);
+  const outcomeLabel = outcome === "timed_out" ? "Task timed out" : outcome === "cancelled" ? "Task cancelled" : "Task failed";
   const failed = steps.some((step) => ["failed", "cancelled", "interrupted"].includes(step.status));
   const rows = (
     <ul
@@ -40,11 +43,11 @@ export function ChatActivitySteps({ steps, isPreparingReply = false }: { steps: 
       role="status"
       aria-live="polite"
     >
-      {running || isPreparingReply || steps.length === 1 ? (
+      {!stopped && (running || isPreparingReply || steps.length === 1 || phase) ? (
         rows
       ) : (
         <details>
-          <summary>{failed ? "Activity needs attention" : `Completed ${steps.length} steps`}</summary>
+          <summary>{stopped ? `${outcomeLabel} · ${completed} ${completed === 1 ? "step" : "steps"} completed` : failed ? "Activity needs attention" : `Completed ${completed} steps`}</summary>
           {rows}
         </details>
       )}

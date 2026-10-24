@@ -18,7 +18,10 @@ def is_scheduling_request(message):
         return False
     if re.search(r"\b(?:don't|do not|never)\s+(?:remind|schedule|set)\b", text):
         return False
-    return bool(re.search(r"\bremind\s+me\b|\b(?:set|create|add)\b.*\b(?:reminder|timer|alarm)\b", text) or re.search(r"\b(?:schedule|send|email)\b.*\b(?:at\s+\d|in\s+\w+\s+(?:minutes?|mins?|hours?|days?)|tomorrow|tonight|later|every|next\s+\w+)", text))
+    return bool(
+        re.search(r"\bremind\s+me\b|\b(?:set|create|add)\b.*\b(?:reminder|timer|alarm)\b", text)
+        or re.search(r"\b(?:schedule|send|email)\b.*\b(?:at\s+\d|in\s+\w+\s+(?:minutes?|mins?|hours?|days?)|tomorrow|tonight|later|every|next\s+\w+)", text)
+    )
 
 
 def decode_action(payload):
@@ -91,14 +94,17 @@ def resolve_email_approval(message, conversation_log):
         return None
     if answer in ("no", "cancel"):
         for record, _ in pending:
-            service.update_trigger(record.id, agent_name=AGENT_NAME, status="completed")
+            if service.update_if_unchanged(record, {"status": "cancelled", "next_trigger": None}) is None:
+                return "The email draft changed. Review its latest version in Reminders before cancelling."
         return "Email schedule cancelled. Nothing was sent."
     if any(parse_datetime(record.next_trigger, resolve_timezone(record.timezone)) <= utc_now() for record, _ in pending):
         return "An email's scheduled time has passed. Please choose a new time; nothing was sent."
     replies = []
     for record, action in pending:
         action["approved_at"] = now_in_user_timezone().isoformat()
-        updated = service.update_trigger(record.id, agent_name=AGENT_NAME, payload=PAYLOAD_PREFIX + json.dumps(action), status="active")
+        updated = service.update_if_unchanged(record, {"payload": PAYLOAD_PREFIX + json.dumps(action), "status": "active"})
+        if updated is None:
+            return "The email draft changed. Review and approve its latest version in Reminders."
         replies.append(confirmation(updated))
     return "\n\n".join(replies)
 

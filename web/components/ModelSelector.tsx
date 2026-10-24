@@ -234,7 +234,7 @@ export default function ModelSelector({ models, value, onChange, disabled }: { m
         </button>
         {present && (
           <div
-            className={styles.dropdown}
+            className={`${styles.dropdown} menu-popover`}
             data-state={open ? "open" : "closed"}
             aria-hidden={!open}
             onAnimationEnd={(event) => {

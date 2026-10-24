@@ -1,10 +1,13 @@
 """Interaction Agent Runtime - handles LLM calls for user and agent turns."""
 
+import asyncio
 import json
 from dataclasses import dataclass, field
+from html import escape
 from typing import Any, Dict, List, Optional, Set
 
 from ...execution_trace import traced
+from ...services.conversation.request_context import current_request, request_scope, task_failure_message
 from ...services.scheduling import AGENT_NAME, is_scheduling_request, resolve_email_approval, scheduling_context
 
 from .agent import build_system_prompt, prepare_message_with_history
@@ -65,10 +68,19 @@ class InteractionAgentRuntime:
             raise ValueError("No model provider configured. Set OPENROUTER_API_KEY or add an OpenAI-compatible model in Settings → Model.")
 
     # Main entry point for processing user messages through the LLM interaction loop
-    @traced("interaction", lambda self, user_message, request_id=None: ("Interaction agent", {"prompt": user_message, "request_id": request_id, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]}))
-    async def execute(self, user_message: str, request_id: Optional[str] = None) -> InteractionResult:
+    @traced(
+        "interaction",
+        lambda self, user_message, request_id=None, retry_of=None: (
+            "Interaction agent",
+            {"prompt": user_message, "request_id": request_id, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]},
+        ),
+    )
+    async def execute(self, user_message: str, request_id: Optional[str] = None, retry_of: Optional[str] = None) -> InteractionResult:
         """Handle a user-authored message."""
+        with request_scope(request_id, user_message, timeout_seconds=get_settings().execution_timeout_seconds, retry_of=retry_of):
+            return await self._execute_user_message(user_message)
 
+    async def _execute_user_message(self, user_message: str) -> InteractionResult:
         try:
             transcript_before = self._load_conversation_transcript()
             self.conversation_log.record_user_message(user_message)
@@ -91,7 +103,16 @@ class InteractionAgentRuntime:
                 self.conversation_log.record_reply(result.response)
                 return InteractionResult(success=result.success, response=result.response, error=result.error, execution_agents_used=1)
 
-            system_prompt = build_system_prompt()
+            system_prompt = build_system_prompt() + (
+                "\nScheduled updates in <scheduled_update> are independent background notifications. "
+                "They do not answer, cancel, or replace the current user request or execution-agent task. "
+                "Finish the task identified in the current turn, even if an unrelated scheduled update appears later in history. "
+                "The current user message is the only authorization for new work. Do not restart failed or historical tasks "
+                "in response to greetings or unrelated messages. Earlier answers are not evidence for a fresh search."
+            )
+            context = current_request.get()
+            if context and context.retry_of:
+                system_prompt += " This is an explicit retry using saved email results when available. Do not describe reused results as a newly fetched search; identify them as saved results."
             messages = prepare_message_with_history(user_message, transcript_before, message_type="user")
 
             logger.info("Processing user message through interaction agent")
@@ -114,28 +135,41 @@ class InteractionAgentRuntime:
                 response = f"I couldn't prepare that schedule: {exc}"
                 self.conversation_log.record_reply(response)
                 return InteractionResult(success=False, response=response, error=str(exc))
-            return InteractionResult(
-                success=False,
-                response="",
-                error=str(exc),
-            )
+            response = task_failure_message(str(exc))
+            self.conversation_log.record_task_failure(response)
+            return InteractionResult(success=False, response=response, error=str(exc))
 
     # Handle incoming messages from execution agents and generate appropriate responses
-    @traced("interaction", lambda self, agent_message: ("Interaction agent · results", {"agent_message": agent_message, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]}))
+    @traced(
+        "interaction",
+        lambda self, agent_message: (
+            "Interaction agent · results",
+            {"agent_message": agent_message, "access": ["Conversation history", "Working memory", "Agent roster", "Gmail connection status"]},
+        ),
+    )
     async def handle_agent_message(self, agent_message: str) -> InteractionResult:
         """Process a status update emitted by an execution agent."""
 
         try:
-            transcript_before = self._load_conversation_transcript()
+            request = current_request.get()
             self.conversation_log.record_agent_message(agent_message)
-
-            system_prompt = build_system_prompt()
-            messages = prepare_message_with_history(agent_message, transcript_before, message_type="agent")
+            task = f"<originating_user_request>{escape(request.prompt, quote=False)}</originating_user_request>\n" if request else ""
+            system_prompt = build_system_prompt() + (
+                "\nRespond only to the originating task using the execution results in the current turn. "
+                "This is a result delivery, not a new user instruction. Do not restart the task or start unrelated work. "
+                "Prior chat answers and scheduled updates are not evidence for this task. "
+                "A failed or incomplete search cannot support a verified total. State uncertainty explicitly. "
+                "Give one final answer grounded in these results."
+            )
+            messages = prepare_message_with_history(task + agent_message, "", message_type="agent")
 
             logger.info("Processing execution agent results")
-            summary = await self._run_interaction_loop(system_prompt, messages)
+            self.tool_schemas = [schema for schema in get_tool_schemas() if schema["function"]["name"] == "send_message_to_user"]
+            summary = await self._run_interaction_loop(system_prompt, messages, result_delivery=True)
 
             final_response = self._finalize_response(summary)
+            if not final_response:
+                raise RuntimeError("The model did not produce an answer for the completed task.")
 
             if final_response and not summary.user_messages:
                 self.conversation_log.record_reply(final_response)
@@ -148,17 +182,16 @@ class InteractionAgentRuntime:
 
         except Exception as exc:
             logger.error("Interaction agent (agent message) failed", extra={"error": str(exc)})
-            return InteractionResult(
-                success=False,
-                response="",
-                error=str(exc),
-            )
+            response = task_failure_message(str(exc))
+            self.conversation_log.record_task_failure(response)
+            return InteractionResult(success=False, response=response, error=str(exc))
 
     # Core interaction loop that handles LLM calls and tool executions until completion
     async def _run_interaction_loop(
         self,
         system_prompt: str,
         messages: List[Dict[str, Any]],
+        result_delivery: bool = False,
     ) -> _LoopSummary:
         """Iteratively query the LLM until it issues a final response."""
 
@@ -191,7 +224,15 @@ class InteractionAgentRuntime:
                     continue
                 summary.tool_names.append(tool_call.name)
 
-                result = self._execute_tool(tool_call)
+                if result_delivery and tool_call.name != "send_message_to_user":
+                    result = ToolResult(
+                        success=False,
+                        payload={
+                            "error": "Result delivery must send one answer from the supplied task results. It cannot wait, start new work, or perform other actions."
+                        },
+                    )
+                else:
+                    result = self._execute_tool(tool_call)
 
                 if result.success and tool_call.name == "send_message_to_agent":
                     agent_name = tool_call.arguments.get("agent_name")
@@ -201,6 +242,8 @@ class InteractionAgentRuntime:
 
                 if result.user_message:
                     summary.user_messages.append(result.user_message)
+                    if result_delivery:
+                        return summary
 
                 tool_message = {
                     "role": "tool",
@@ -317,6 +360,9 @@ class InteractionAgentRuntime:
     def _execute_tool(self, tool_call: _ToolCall) -> ToolResult:
         """Execute a tool call and convert low-level errors into structured results."""
 
+        context = current_request.get()
+        if context and context.stopped_reason:
+            raise asyncio.CancelledError()
         if "__invalid_arguments__" in tool_call.arguments:
             error = tool_call.arguments["__invalid_arguments__"]
             self._log_tool_invocation(tool_call, stage="rejected", detail={"error": error})

@@ -18,12 +18,16 @@ import { ExecutionMonitor } from "@/components/execution/ExecutionMonitor";
 
 import { toBubbles } from "@/lib/chatHistory";
 
+import { Reminders } from "@/components/reminders/Reminders";
+import { useReminders } from "@/components/reminders/useReminders";
+
 const POLL_INTERVAL_MS = 1500;
 
 export default function Page() {
   const { settings, setSettings } = useSettings();
-  const [activeView, setActiveView] = useState<"conversation" | "execution">("conversation");
+  const [activeView, setActiveView] = useState<"conversation" | "execution" | "reminders">("conversation");
   const [executionResetKey, setExecutionResetKey] = useState(0);
+  const reminders = useReminders(executionResetKey);
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -58,7 +62,7 @@ export default function Page() {
       if (!res.ok) return false;
       const data = await res.json();
       setMessages((previous) => toBubbles(data, previous));
-      return true;
+      return toBubbles(data);
     } catch (err: any) {
       if (err?.name === "AbortError") return;
       console.error("Failed to load chat history", err);
@@ -86,7 +90,7 @@ export default function Page() {
       }
       const ids = new Set(finished.map((request) => request.id));
       setPendingRequests((previous) => previous.filter((id) => !ids.has(id)));
-      const failure = finished.find((request) => request.progress.status === "failed");
+      const failure = finished.find((request) => request.progress.status === "failed" && !loaded.some((message) => message.requestId === request.id && message.source === "failure"));
       if (failure) setError(failure.progress.error || "The request could not be completed.");
     }
     void syncFinishedRequests();
@@ -138,7 +142,7 @@ export default function Page() {
   }, [loadHistory]);
 
   useEffect(() => {
-    const syncView = () => setActiveView(window.location.hash === "#execution" ? "execution" : "conversation");
+    const syncView = () => setActiveView(window.location.hash === "#reminders" ? "reminders" : window.location.hash === "#execution" ? "execution" : "conversation");
     syncView();
     window.addEventListener("hashchange", syncView);
     return () => window.removeEventListener("hashchange", syncView);
@@ -148,7 +152,7 @@ export default function Page() {
   const inputPlaceholder = "Ask anything, or give me something to do…";
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, retryOf?: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
 
@@ -160,8 +164,10 @@ export default function Page() {
       // Optimistically add the user message immediately
       const userMessage: ChatBubble = {
         id: `user-${requestId}`,
+        requestId,
         role: "user",
         text: trimmed,
+        timestamp: new Date().toISOString(),
       };
       setMessages((prev) => {
         const newMessages = [...prev, userMessage];
@@ -175,6 +181,7 @@ export default function Page() {
           body: JSON.stringify({
             messages: [{ role: "user", content: trimmed }],
             request_id: requestId,
+            retry_of: retryOf,
           }),
         });
 
@@ -193,6 +200,17 @@ export default function Page() {
       }
     },
     [beginActivity, messages, removeActivity],
+  );
+
+  const retryRequest = useCallback(
+    async (requestId: string) => {
+      const question = messages.find((message) => message.role === "user" && message.requestId === requestId);
+      if (!question) return;
+      try {
+        await sendMessage(question.text, requestId);
+      } catch {}
+    },
+    [messages, sendMessage],
   );
 
   const handleSubmit = useCallback(async () => {
@@ -230,6 +248,7 @@ export default function Page() {
         onOpenSettings={openSettings}
         activeView={activeView}
         onNavigate={setActiveView}
+        reminderCount={reminders.count}
       />
       <section
         id="conversation"
@@ -243,7 +262,10 @@ export default function Page() {
         />
         <ChatMessages
           messages={messages}
+          timeZone={settings.timezone || undefined}
           activities={activities}
+          onRetryRequest={retryRequest}
+          activeRequestIds={Array.from(new Set([...pendingRequests, ...activities.filter((activity) => chatRequestStatus(executionSpans, activity.requestId)?.status === "running").map((activity) => activity.requestId)]))}
           isLoadingHistory={isLoadingHistory}
           isWaitingForResponse={isWaitingForResponse}
           scrollContainerRef={scrollContainerRef}
@@ -279,6 +301,21 @@ export default function Page() {
           spans={executionSpans}
           error={executionError}
         />
+      </section>
+      <section
+        id="reminders"
+        className="chat-main"
+        aria-label="Reminders workspace"
+        hidden={activeView !== "reminders"}
+      >
+        {activeView === "reminders" && (
+          <Reminders
+            items={reminders.items}
+            loading={reminders.loading}
+            error={reminders.error}
+            onChange={reminders.change}
+          />
+        )}
       </section>
       <SettingsModal
         open={open}

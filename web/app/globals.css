@@ -4,6 +4,11 @@
 
 :root {
   color-scheme: light;
+  --status-scheduled-background: #f7edd5;
+  --status-scheduled-color: #7b5b1d;
+  --status-completed-background: #e1ecdf;
+  --status-completed-color: #244d3d;
+  --status-completed-indicator: #438159;
   --motion-fast: 140ms;
   --motion-normal: 220ms;
   --motion-slow: 320ms;

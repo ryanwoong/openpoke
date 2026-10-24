@@ -29,9 +29,20 @@ def execution_snapshot():
     return {"spans": trace_store.snapshot()}
 
 
+@router.delete("/requests/{request_id}")
+async def cancel_request(request_id: str):
+    from ..services.conversation.request_context import stop_request
+
+    return {"cancelled": stop_request(request_id)}
+
+
 @router.delete("/history", response_model=ChatHistoryClearResponse)
 def clear_history() -> ChatHistoryClearResponse:
     from ..services import get_execution_agent_logs, get_agent_roster
+
+    from ..services.conversation.request_context import clear_requests
+
+    clear_requests()
 
     # Clear conversation log
     log = get_conversation_log()
@@ -53,6 +64,9 @@ def clear_history() -> ChatHistoryClearResponse:
     from ..openrouter_client.context import context_compactor
 
     context_compactor.clear()
+    from ..services.conversation.read_checkpoints import read_checkpoints
+
+    read_checkpoints.clear()
 
     return ChatHistoryClearResponse()
 

@@ -1,6 +1,6 @@
 import { BrandMark } from "./BrandMark";
 
-export function ChatSidebar({ email, onOpenSettings, activeView, onNavigate }: { email: string; onOpenSettings: () => void; activeView: "conversation" | "execution"; onNavigate: (view: "conversation" | "execution") => void }) {
+export function ChatSidebar({ email, onOpenSettings, activeView, onNavigate, reminderCount }: { email: string; onOpenSettings: () => void; activeView: "conversation" | "execution" | "reminders"; onNavigate: (view: "conversation" | "execution" | "reminders") => void; reminderCount: number }) {
   const name = email ? email.split("@")[0].replace(/[._-]/g, " ") : "Your profile";
 
   return (
@@ -66,6 +66,34 @@ export function ChatSidebar({ email, onOpenSettings, activeView, onNavigate }: {
             <path d="M10 6.5h7.5V14m-3-3 3 3 3-3M6.5 10v7.5H14" />
           </svg>
           <span>Execution</span>
+        </a>
+        <a
+          aria-label={reminderCount ? `Reminders, ${reminderCount} upcoming` : "Reminders"}
+          className="conversation-link reminders-link"
+          href="#reminders"
+          aria-current={activeView === "reminders" ? "page" : undefined}
+          onClick={() => onNavigate("reminders")}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4M12 2V1" />
+          </svg>
+          <span>Reminders</span>
+          {reminderCount > 0 && (
+            <span
+              className="reminders-badge"
+              aria-hidden="true"
+            >
+              {reminderCount}
+            </span>
+          )}
         </a>
       </nav>
       <button

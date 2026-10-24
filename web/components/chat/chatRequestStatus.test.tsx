@@ -44,3 +44,18 @@ test("a recovered tool failure does not turn a successful final reply into a cha
   const reply = { ...root("reply", "request", "completed"), parent_id: "task", run_id: "task" };
   assert.deepEqual(chatRequestStatus([task, tool, reply], "request"), { status: "completed" });
 });
+
+test("timed-out execution remains failed after the initial acknowledgement completed", () => {
+  const task = root("task", "request", "completed");
+  const worker = { ...root("worker", "request", "cancelled"), parent_id: "task", run_id: "task", kind: "execution", output: { error: "" } };
+  assert.equal(chatRequestStatus([task, worker], "request")?.status, "failed");
+  assert.equal(hasActiveChatRequest([task, worker]), false);
+});
+
+test("a cancelled worker's lingering synchronous Gmail call does not keep the request busy", () => {
+  const task = root("task", "request", "completed");
+  const worker = { ...root("worker", "request", "cancelled"), parent_id: "task", run_id: "task", kind: "execution" };
+  const gmail = { ...root("gmail", "request"), parent_id: "worker", run_id: "task", kind: "access" };
+  assert.equal(chatRequestStatus([task, worker, gmail], "request")?.status, "failed");
+  assert.equal(hasActiveChatRequest([task, worker, gmail]), false);
+});

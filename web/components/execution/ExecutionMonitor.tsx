@@ -242,7 +242,7 @@ export function ExecutionMonitor({ resetKey, spans, error }: { resetKey: number;
         <span>Models</span>
         <span>Tools & services</span>
       </div>
-      <div className={styles.body}>
+      <div className={`${styles.body} workspace-content-enter`}>
         <div
           ref={viewportRef}
           className={styles.viewport}

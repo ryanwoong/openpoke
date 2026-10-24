@@ -102,3 +102,60 @@ button:active:not(:disabled) {
     animation: none;
   }
 }
+
+#execution:not([hidden]) .workspace-content-enter,
+#reminders:not([hidden]) .workspace-content-enter {
+  animation: workspace-content-in 280ms var(--motion-ease) backwards;
+}
+
+@keyframes workspace-content-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #execution:not([hidden]) .workspace-content-enter,
+  #reminders:not([hidden]) .workspace-content-enter {
+    animation: none;
+  }
+}
+
+.menu-popover {
+  transform-origin: var(--menu-origin, top left);
+}
+.menu-popover[data-state="open"] {
+  animation: menu-popover-in 180ms var(--motion-ease) both;
+}
+.menu-popover[data-state="closed"] {
+  pointer-events: none;
+  animation: menu-popover-out var(--motion-fast) var(--motion-ease) both;
+}
+@keyframes menu-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes menu-popover-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-popover[data-state] {
+    animation: none;
+  }
+}

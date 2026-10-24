@@ -11,6 +11,9 @@ class ChatMessage(BaseModel):
     role: str = Field(..., min_length=1)
     content: str = Field(...)
     timestamp: Optional[str] = Field(default=None)
+    retryable: bool = False
+    source: Optional[str] = Field(default=None)
+    request_id: Optional[str] = Field(default=None)
 
     @model_validator(mode="before")
     @classmethod
@@ -31,6 +34,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     system: Optional[str] = None
     stream: bool = True
+    retry_of: Optional[str] = Field(default=None, max_length=128)
 
     def openrouter_messages(self) -> List[Dict[str, str]]:
         return [msg.as_openrouter() for msg in self.messages if msg.content.strip()]

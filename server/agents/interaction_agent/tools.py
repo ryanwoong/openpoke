@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from ...logging_config import logger
+from ...services.conversation.request_context import create_request_task
 from ...services.conversation import get_conversation_log
 from ...services.execution import get_agent_roster, get_execution_agent_logs
 from ..execution_agent.batch_manager import ExecutionBatchManager
@@ -20,6 +21,7 @@ class ToolResult:
     user_message: Optional[str] = None
     recorded_reply: bool = False
 
+
 # Tool schemas for OpenRouter
 TOOL_SCHEMAS = [
     {
@@ -32,7 +34,7 @@ TOOL_SCHEMAS = [
                 "properties": {
                     "agent_name": {
                         "type": "string",
-                        "description": "Human-readable agent name describing its purpose (e.g., 'Vercel Job Offer', 'Email to Sharanjeet'). This name will be used to identify and potentially reuse the agent."
+                        "description": "Human-readable agent name describing its purpose (e.g., 'Vercel Job Offer', 'Email to Sharanjeet'). This name will be used to identify and potentially reuse the agent.",
                     },
                     "instructions": {"type": "string", "description": "Instructions for the agent to execute."},
                 },
@@ -138,7 +140,7 @@ def send_message_to_agent(agent_name: str, instructions: str) -> ToolResult:
         logger.error("No running event loop available for async execution")
         return ToolResult(success=False, payload={"error": "No event loop available"})
 
-    loop.create_task(_execute_async())
+    create_request_task(_execute_async())
 
     return ToolResult(
         success=True,
@@ -193,10 +195,9 @@ def send_draft(
 def wait(reason: str) -> ToolResult:
     """Wait silently and add a wait log entry that is not visible to the user."""
     log = get_conversation_log()
-    
+
     # Record a dedicated wait entry so the UI knows to ignore it
     log.record_wait(reason)
-    
 
     return ToolResult(
         success=True,

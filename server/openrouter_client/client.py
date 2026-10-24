@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from ..execution_trace import traced
+from ..services.conversation.request_context import remaining_seconds
 
 from ..config import get_settings
 from ..logging_config import logger
@@ -85,20 +87,27 @@ async def _post_completion(payload, target, api_key, base_url):
     label = target.label
     url = f"{(target.base_url or base_url).rstrip('/')}/chat/completions"
     logger.info("%s request: model=%s, tools=%d", label, payload["model"], len(payload.get("tools") or []))
+    timeout = get_settings().model_timeout_seconds
+    remaining = remaining_seconds()
+    timeout = min(timeout, remaining) if remaining is not None else timeout
+    if timeout <= 0:
+        raise OpenRouterError("Task timed out at its overall deadline")
     for attempt in range(2):
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(
-                    url,
-                    headers=_headers(api_key=target.api_key, required=False) if custom_endpoint else _headers(api_key=api_key),
-                    json=payload,
-                    # Self-hosted models can take minutes on long prompts.
-                    timeout=300.0 if custom_endpoint else 60.0,
-                )
+                async with asyncio.timeout(timeout):
+                    response = await client.post(
+                        url,
+                        headers=_headers(api_key=target.api_key, required=False) if custom_endpoint else _headers(api_key=api_key),
+                        json=payload,
+                        timeout=timeout,
+                    )
                 response.raise_for_status()
                 result = response.json()
                 logger.info("%s response: requested_model=%s, returned_model=%s", label, payload["model"], result.get("model", "unknown"))
                 return result
+            except (TimeoutError, httpx.TimeoutException) as exc:
+                raise OpenRouterError(f"Model request timed out after {timeout:g} seconds") from exc
             except httpx.HTTPStatusError as exc:
                 _handle_response_error(exc, label)
             except (httpx.ConnectError, ssl.SSLError) as exc:
@@ -143,20 +152,44 @@ async def request_chat_completion(
     async def summarize(source: str, output_tokens: int) -> str:
         summary_payload = {
             "model": target.model,
-            "messages": [{"role": "system", "content": SUMMARY_SYSTEM}, {"role": "user", "content": source}],
+            "messages": [
+                {
+                    "role": "system",
+                    "content": SUMMARY_SYSTEM
+                    + f" Keep the final notes under {max(64, output_tokens // 2)} words. Spend the available output on factual notes, not a reasoning narrative.",
+                },
+                {"role": "user", "content": source},
+            ],
             "stream": False,
-            "max_tokens": output_tokens,
         }
-        response = await _post_completion(summary_payload, target, api_key, base_url)
-        choices = response.get("choices") or []
-        content = (choices[0].get("message") or {}).get("content") if choices else None
-        if not isinstance(content, str) or not content.strip() or response.get("choices", [{}])[0].get("finish_reason") == "length":
-            raise ContextBudgetError("The model could not finish a context summary. Narrow the request or choose a model with a larger context window.")
-        return content.strip()
+        capacity = min(8192, window - estimate_tokens(summary_payload) - 512)
+        if capacity < 128:
+            raise ContextBudgetError("The source batch leaves too little room for a summary. Narrow the search or split the task.")
+        allowance = min(capacity, max(1024, output_tokens * 2))
+        for summary_attempt in range(3):
+            summary_payload["max_tokens"] = allowance
+            response = await _post_completion(summary_payload, target, api_key, base_url)
+            choices = response.get("choices") or []
+            choice = choices[0] if choices else {}
+            content = (choice.get("message") or {}).get("content")
+            if isinstance(content, str) and content.strip() and choice.get("finish_reason") != "length":
+                return content.strip()
+            if summary_attempt == 2 or allowance >= capacity:
+                break
+            allowance = min(capacity, allowance * 2)
+            logger.info("Retrying incomplete context summary: model=%s output_tokens=%d", target.model, allowance)
+        raise ContextBudgetError("The model could not complete a context summary after bounded retries. Try a smaller search or split the task.")
 
     for attempt in range(2):
         try:
-            prepared, compacted = await context_compactor.prepare(payload, budget, summarize, str(scope))
+            compaction_timeout = get_settings().context_compaction_timeout_seconds
+            remaining = remaining_seconds()
+            compaction_timeout = min(compaction_timeout, remaining) if remaining is not None else compaction_timeout
+            try:
+                async with asyncio.timeout(compaction_timeout):
+                    prepared, compacted = await context_compactor.prepare(payload, budget, summarize, str(scope))
+            except TimeoutError as exc:
+                raise ContextBudgetError(f"Context compaction timed out after {compaction_timeout:g} seconds") from exc
             logger.debug("Model context: model=%s estimated_tokens=%d input_budget=%d compacted=%s", target.model, estimate_tokens(prepared), budget, compacted)
             return await _post_completion(prepared, target, api_key, base_url)
         except ContextWindowError as exc:

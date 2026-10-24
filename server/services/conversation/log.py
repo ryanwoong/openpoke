@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import re
 import threading
+from contextvars import ContextVar
 from html import escape, unescape
 from pathlib import Path
+from urllib.parse import quote, unquote
 from typing import Dict, Iterator, List, Optional, Protocol, Tuple
 
 from ...config import get_settings
 from ...logging_config import logger
 from ...models import ChatMessage
+from .request_context import current_request
+from .read_checkpoints import read_checkpoints
 from ...utils.timezones import now_in_user_timezone
 from typing import TYPE_CHECKING
 
@@ -37,13 +41,20 @@ def _decode_payload(payload: str) -> str:
 
 def _default_formatter(tag: str, timestamp: str, payload: str) -> str:
     encoded = _encode_payload(payload)
-    return f"<{tag} timestamp=\"{timestamp}\">{encoded}</{tag}>\n"
+    request = current_request.get()
+    attribute = f' request_id="{quote(request.request_id, safe="")}"' if request and tag != "scheduled_update" and not scheduled_delivery.get() else ""
+    if tag == "task_failure" and request and request.read_only and read_checkpoints.available(request.request_id):
+        attribute += ' retryable="true"'
+    return f'<{tag} timestamp="{timestamp}"{attribute}>{encoded}</{tag}>\n'
 
 
 def _resolve_working_memory_log() -> "WorkingMemoryLog":
     from .summarization import get_working_memory_log
 
     return get_working_memory_log()
+
+
+scheduled_delivery = ContextVar("scheduled_delivery", default=False)
 
 
 _ATTR_PATTERN = re.compile(r"(\w+)\s*=\s*\"([^\"]*)\"")
@@ -101,34 +112,35 @@ class ConversationLog:
         if closing_tag != tag:
             return None
         payload = stripped[open_end + 1 : close_start]
-        attributes: Dict[str, str] = {
-            match.group(1): match.group(2) for match in _ATTR_PATTERN.finditer(attr_string)
-        }
+        attributes: Dict[str, str] = {match.group(1): match.group(2) for match in _ATTR_PATTERN.finditer(attr_string)}
         timestamp = attributes.get("timestamp", "")
         return tag, timestamp, _decode_payload(payload)
 
-    def iter_entries(self) -> Iterator[Tuple[str, str, str]]:
+    def _iter_records(self):
         with self._lock:
             try:
                 lines = self._path.read_text(encoding="utf-8").splitlines()
             except FileNotFoundError:
                 lines = []
             except Exception as exc:  # pragma: no cover - defensive
-                logger.error(
-                    "conversation log read failed", extra={"error": str(exc), "path": str(self._path)}
-                )
+                logger.error("conversation log read failed", extra={"error": str(exc), "path": str(self._path)})
                 raise
         for line in lines:
             item = self._parse_line(line)
             if item is not None:
-                yield item
+                attributes = dict(_ATTR_PATTERN.findall(line[: line.find(">")]))
+                yield (*item, unquote(unescape(attributes["request_id"])) if "request_id" in attributes else None, attributes.get("retryable") == "true")
+
+    def iter_entries(self) -> Iterator[Tuple[str, str, str]]:
+        for tag, timestamp, payload, _, _ in self._iter_records():
+            yield tag, timestamp, payload
 
     def load_transcript(self) -> str:
         parts: List[str] = []
         for tag, timestamp, payload in self.iter_entries():
             safe_payload = escape(payload, quote=False)
             if timestamp:
-                parts.append(f"<{tag} timestamp=\"{timestamp}\">{safe_payload}</{tag}>")
+                parts.append(f'<{tag} timestamp="{timestamp}">{safe_payload}</{tag}>')
             else:
                 parts.append(f"<{tag}>{safe_payload}</{tag}>")
         return "\n".join(parts)
@@ -142,8 +154,28 @@ class ConversationLog:
         self._working_memory_log.append_entry("agent_message", content, timestamp)
 
     def record_reply(self, content: str) -> None:
+        context = current_request.get()
+        if context and context.stopped_reason:
+            return
+        if scheduled_delivery.get():
+            self.record_scheduled_update(content)
+            return
         timestamp = self._append("poke_reply", content)
         self._working_memory_log.append_entry("poke_reply", content, timestamp)
+
+    def record_task_failure(self, content: str) -> None:
+        context = current_request.get()
+        if context and context.stopped_reason == "cleared":
+            return
+        if scheduled_delivery.get():
+            self.record_scheduled_update(content)
+            return
+        timestamp = self._append("task_failure", content)
+        self._working_memory_log.append_entry("task_failure", content, timestamp)
+
+    def record_scheduled_update(self, content: str) -> None:
+        timestamp = self._append("scheduled_update", content)
+        self._working_memory_log.append_entry("scheduled_update", content, timestamp)
 
     def record_wait(self, reason: str) -> None:
         """Record a wait marker that should not reach the user-facing chat history."""
@@ -174,21 +206,18 @@ class ConversationLog:
 
     def to_chat_messages(self) -> List[ChatMessage]:
         messages: List[ChatMessage] = []
-        for tag, timestamp, payload in self.iter_entries():
-            normalized_timestamp = timestamp or None
-            if tag == "user_message":
-                messages.append(
-                    ChatMessage(role="user", content=payload, timestamp=normalized_timestamp)
-                )
-            elif tag == "poke_reply":
+        for tag, timestamp, payload, request_id, retryable in self._iter_records():
+            if tag in ("user_message", "poke_reply", "scheduled_update", "task_failure"):
                 messages.append(
                     ChatMessage(
-                        role="assistant", content=payload, timestamp=normalized_timestamp
+                        role="user" if tag == "user_message" else "assistant",
+                        content=payload,
+                        timestamp=timestamp or None,
+                        source="scheduled" if tag == "scheduled_update" else "failure" if tag == "task_failure" else None,
+                        request_id=request_id,
+                        retryable=retryable,
                     )
                 )
-            elif tag == "wait":
-                # Wait markers are orchestration metadata and must not surface to the user
-                continue
         return messages
 
     def clear(self) -> None:
@@ -197,9 +226,7 @@ class ConversationLog:
                 if self._path.exists():
                     self._path.unlink()
             except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "conversation log clear failed", extra={"error": str(exc), "path": str(self._path)}
-                )
+                logger.warning("conversation log clear failed", extra={"error": str(exc), "path": str(self._path)})
             finally:
                 self._ensure_directory()
         try:

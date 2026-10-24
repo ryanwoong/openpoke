@@ -65,7 +65,7 @@ test("renders activity at the bottom of the correct repeated turn", () => {
 });
 
 test("collapses completed groups and keeps running groups visible without a duplicate loader", () => {
-  const activities = updateChatActivity([activity], [root, span("search", { status: "completed", output: [] }), span("reminder", { label: "createTrigger", status: "completed" })]);
+  const activities = updateChatActivity([activity], [{ ...root, status: "completed" }, span("search", { status: "completed", output: [] }), span("reminder", { label: "createTrigger", status: "completed" })]);
   const render = () =>
     renderToStaticMarkup(
       <ChatMessages
@@ -110,9 +110,9 @@ test("live activity stays below acknowledgements through tool completion and fin
   activities = updateChatActivity(activities, [root, completedTool]);
   html = render();
   assert.ok(html.indexOf("Found 2 matching emails") > html.indexOf("Checking your emails now."));
-  assert.ok(html.indexOf("Preparing your reply") > html.indexOf("Found 2 matching emails"));
+  assert.ok(html.indexOf("Writing answer") > html.indexOf("Found 2 matching emails"));
   assert.equal((html.match(/message-identity/g) || []).length, 1);
-  activities = updateChatActivity(activities, [root, completedTool, span("deliver", { label: "send_message_to_user", status: "completed", started_at: "2026-10-23T12:00:02Z", input: { message: "Here are your emails." } })]);
+  activities = updateChatActivity(activities, [{ ...root, status: "completed" }, completedTool, span("deliver", { label: "send_message_to_user", status: "completed", started_at: "2026-10-23T12:00:02Z", input: { message: "Here are your emails." } })]);
   messages.push({ id: "final", role: "assistant", text: "Here are your emails." });
   waiting = false;
   html = render();
@@ -144,12 +144,12 @@ test("historical activity stays at the end of its turn before a later user messa
 test("counts the emails inside the execution result envelope instead of its two wrapper entries", () => {
   for (const count of [0, 1, 2, 4, 50]) {
     const payload = Array.from({ length: count }, (_, index) => ({ id: `email-${index}`, subject: `Subject ${index + 1}`, sender: `Sender ${index + 1}`, clean_text: "Private email body" }));
-    const result = updateChatActivity([activity], [root, span("search", { status: "completed", output: [true, payload] })]);
+    const result = updateChatActivity([activity], [{ ...root, status: "completed" }, span("search", { status: "completed", output: [true, payload] })]);
     const step = result[0].steps[0];
     assert.equal(step.label, `Found ${count}${count === 50 ? "+" : ""} matching email${count === 1 ? "" : "s"}`);
     assert.equal(step.emails?.length || 0, count);
     assert.ok(!JSON.stringify(result).includes("Private email body"));
-    assert.deepEqual(restoreChatActivity(JSON.stringify(result)), result);
+    assert.deepEqual(restoreChatActivity(JSON.stringify(result)), JSON.parse(JSON.stringify(result)));
   }
 });
 
@@ -201,4 +201,71 @@ test("email activity expands to brief subjects and senders without bodies or raw
   assert.ok(!html.includes("clean_text"));
   const corrupted = JSON.stringify([{ ...result[0], steps: [{ ...result[0].steps[0], emails: [null] }] }]);
   assert.deepEqual(restoreChatActivity(corrupted), []);
+});
+
+test("request IDs keep late activity with its reply rather than a repeated question", () => {
+  const html = renderToStaticMarkup(
+    <ChatMessages
+      messages={[
+        { id: "first", role: "user", text: "Check email", requestId: "request" },
+        { id: "second", role: "user", text: "Check email", requestId: "other" },
+        { id: "reply", role: "assistant", text: "Late result for the first request", requestId: "request" },
+        { id: "third", role: "user", text: "hello", requestId: "greeting" },
+      ]}
+      activities={[{ ...activity, occurrence: 99, steps: [{ id: "search", label: "Searched original request", status: "completed" }] }]}
+      activeRequestIds={["request"]}
+      isWaitingForResponse={true}
+      scrollContainerRef={{ current: null }}
+      onScroll={() => {}}
+    />,
+  );
+  assert.ok(html.indexOf("Searched original request") > html.indexOf("Late result for the first request"));
+  assert.ok(html.indexOf("Searched original request") < html.indexOf(">hello<"));
+  assert.ok(html.includes("Preparing your reply…"));
+  assert.ok(!html.includes("Working on your request…"));
+});
+
+test("standalone activity shows OpenPoke before the first assistant bubble arrives", () => {
+  const render = (withReply: boolean) =>
+    renderToStaticMarkup(
+      <ChatMessages
+        messages={[{ id: "question", role: "user", text: "Check email", requestId: "request" }, ...(withReply ? [{ id: "reply", role: "assistant", text: "Checking your inbox", requestId: "request" }] : [])]}
+        activities={[{ ...activity, steps: [{ id: "search", label: "Found 24 matching emails", status: "completed" }] }]}
+        activeRequestIds={["request"]}
+        isWaitingForResponse={true}
+        scrollContainerRef={{ current: null }}
+        onScroll={() => {}}
+      />,
+    );
+  for (const withReply of [false, true]) {
+    const html = render(withReply);
+    assert.equal((html.match(/>OpenPoke</g) || []).length, 1);
+    assert.ok(html.indexOf(">OpenPoke<") < html.indexOf("Found 24 matching emails"));
+    assert.ok(html.includes("Preparing your reply…"));
+  }
+});
+
+test("compaction and timeout reflect the task outcome even after all search steps finish", () => {
+  const completedSearch = span("search", { status: "completed", output: [{ id: "one" }] });
+  const worker = span("worker", { kind: "execution", label: "Order counter" });
+  const compaction = span("compact", { parent_id: "worker", kind: "model", label: "Context compaction · local model" });
+  const started = updateChatActivity([activity], [root, worker, completedSearch, compaction]);
+  assert.equal(started[0].phase, "Compacting results…");
+  const stopped = updateChatActivity(started, [{ ...root, status: "completed" }, { ...worker, status: "cancelled", output: { error: "Task timed out at its overall deadline" } }, completedSearch, { ...compaction, status: "cancelled" }]);
+  assert.equal(stopped[0].status, "timed_out");
+  assert.equal(stopped[0].phase, undefined);
+  const html = renderToStaticMarkup(
+    <ChatMessages
+      messages={[{ id: "question", role: "user", text: "Check email", requestId: "request" }]}
+      activities={stopped}
+      activeRequestIds={[]}
+      isWaitingForResponse={false}
+      scrollContainerRef={{ current: null }}
+      onScroll={() => {}}
+    />,
+  );
+  assert.ok(html.includes("Task timed out · 1 step completed"));
+  assert.ok(!html.includes("Compacting results…"));
+  assert.ok(!html.includes("Writing answer…"));
+  assert.equal(restoreChatActivity(JSON.stringify(stopped))[0].status, "timed_out");
 });

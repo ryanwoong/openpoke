@@ -10,6 +10,9 @@ from typing import Dict, List, Optional
 
 from .runtime import ExecutionAgentRuntime, ExecutionResult
 from ...logging_config import logger
+from ...config import get_settings
+from ...execution_trace import current_run_id
+from ...services.conversation.request_context import task_failure_message, remaining_seconds, current_request
 
 
 @dataclass
@@ -37,11 +40,11 @@ class ExecutionBatchManager:
     """Run execution agents and deliver their combined outcome."""
 
     # Initialize batch manager with timeout and coordination state for execution agents
-    def __init__(self, timeout_seconds: int = 90) -> None:
-        self.timeout_seconds = timeout_seconds
+    def __init__(self, timeout_seconds: Optional[float] = None) -> None:
+        self.timeout_seconds = timeout_seconds if timeout_seconds is not None else get_settings().execution_timeout_seconds
         self._pending: Dict[str, PendingExecution] = {}
         self._batch_lock = asyncio.Lock()
-        self._batch_state: Optional[_BatchState] = None
+        self._batch_states: Dict[str, _BatchState] = {}
 
     # Run execution agent with timeout handling and batch coordination for interaction agent
     async def execute_agent(
@@ -60,19 +63,26 @@ class ExecutionBatchManager:
         try:
             logger.info(f"[{agent_name}] Execution started")
             runtime = ExecutionAgentRuntime(agent_name=agent_name)
-            result = await asyncio.wait_for(
-                runtime.execute(instructions),
-                timeout=self.timeout_seconds,
-            )
+            remaining = remaining_seconds()
+            timeout = min(self.timeout_seconds, remaining) if remaining is not None else self.timeout_seconds
+            result = await asyncio.wait_for(runtime.execute(instructions), timeout=timeout)
             status = "SUCCESS" if result.success else "FAILED"
             logger.info(f"[{agent_name}] Execution finished: {status}")
+        except asyncio.CancelledError:
+            async with self._batch_lock:
+                state = self._batch_states.get(batch_id)
+                if state:
+                    state.pending -= 1
+                    if state.pending == 0:
+                        self._batch_states.pop(batch_id, None)
+            raise
         except asyncio.TimeoutError:
             logger.error(f"[{agent_name}] Execution timed out after {self.timeout_seconds}s")
             result = ExecutionResult(
                 agent_name=agent_name,
                 success=False,
                 response=f"Execution timed out after {self.timeout_seconds} seconds",
-                error="Timeout",
+                error=f"Execution timed out after {self.timeout_seconds:g} seconds",
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception(f"[{agent_name}] Execution failed unexpectedly")
@@ -85,6 +95,10 @@ class ExecutionBatchManager:
         finally:
             self._pending.pop(request_id, None)
 
+        result.instructions = instructions
+        if not result.success and not result.user_response:
+            detail = result.error or result.response or "The task could not be completed."
+            result.user_response = task_failure_message(detail)
         await self._complete_execution(batch_id, result, agent_name)
         return result
 
@@ -98,13 +112,9 @@ class ExecutionBatchManager:
         """Attach a new execution to the active batch, opening one when required."""
 
         async with self._batch_lock:
-            if self._batch_state is None:
-                batch_id = str(uuid.uuid4())
-                self._batch_state = _BatchState(batch_id=batch_id)
-            else:
-                batch_id = self._batch_state.batch_id
-
-            self._batch_state.pending += 1
+            batch_id = current_run_id() or request_id
+            state = self._batch_states.setdefault(batch_id, _BatchState(batch_id=batch_id))
+            state.pending += 1
             self._pending[request_id] = PendingExecution(
                 request_id=request_id,
                 agent_name=agent_name,
@@ -123,11 +133,15 @@ class ExecutionBatchManager:
     ) -> None:
         """Record the execution result and dispatch when the batch drains."""
 
+        context = current_request.get()
+        if context and context.stopped_reason:
+            return
         dispatch_payload: Optional[str] = None
         verified_replies: List[str] = []
+        failure_replies: List[str] = []
 
         async with self._batch_lock:
-            state = self._batch_state
+            state = self._batch_states.get(batch_id)
             if state is None or state.batch_id != batch_id:
                 logger.warning(f"[{agent_name}] Dropping result for unknown batch")
                 return
@@ -136,17 +150,27 @@ class ExecutionBatchManager:
             state.pending -= 1
 
             if state.pending == 0:
-                verified_replies = [entry.user_response for entry in state.results if entry.user_response]
-                dispatch_payload = self._format_batch_payload([entry for entry in state.results if not entry.user_response])
+                failed = [entry for entry in state.results if not entry.success]
+                if failed:
+                    verified_replies = [entry.user_response for entry in state.results if entry.user_response and entry.success]
+                    failure_replies.append(
+                        failed[0].user_response
+                        or "I couldn't complete all parts of this task, so I don't have a verified complete answer. Please try a smaller request."
+                    )
+                else:
+                    verified_replies = [entry.user_response for entry in state.results if entry.user_response]
+                    dispatch_payload = self._format_batch_payload([entry for entry in state.results if not entry.user_response])
                 agent_names = [entry.agent_name for entry in state.results]
                 logger.info(f"Execution batch completed: {', '.join(agent_names)}")
-                self._batch_state = None
+                self._batch_states.pop(batch_id, None)
 
-        if verified_replies:
+        if verified_replies or failure_replies:
             from ...services.conversation import get_conversation_log
 
             for reply in verified_replies:
                 get_conversation_log().record_reply(reply)
+            for reply in failure_replies:
+                get_conversation_log().record_task_failure(reply)
         if dispatch_payload:
             await self._dispatch_to_interaction_agent(dispatch_payload)
 
@@ -171,7 +195,7 @@ class ExecutionBatchManager:
 
         self._pending.clear()
         async with self._batch_lock:
-            self._batch_state = None
+            self._batch_states.clear()
 
     # Format multiple execution results into single message for interaction agent
     def _format_batch_payload(self, results: List[ExecutionResult]) -> str:
@@ -181,7 +205,8 @@ class ExecutionBatchManager:
         for result in results:
             status = "SUCCESS" if result.success else "FAILED"
             response_text = (result.response or "(no response provided)").strip()
-            entries.append(f"[{status}] {result.agent_name}: {response_text}")
+            task_context = f"\nTask: {result.instructions}" if result.instructions else ""
+            entries.append(f"[{status}] {result.agent_name}{task_context}\nResult: {response_text}")
         return "\n".join(entries)
 
     # Forward combined execution results to interaction agent for user response generation
@@ -191,10 +216,4 @@ class ExecutionBatchManager:
         from ..interaction_agent.runtime import InteractionAgentRuntime
 
         runtime = InteractionAgentRuntime()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(runtime.handle_agent_message(payload))
-            return
-
-        loop.create_task(runtime.handle_agent_message(payload))
+        await runtime.handle_agent_message(payload)

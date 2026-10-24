@@ -7,6 +7,9 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ...execution_trace import traced
+from ...services.conversation.request_context import current_request
+from ...services.conversation.read_checkpoints import read_checkpoints
+from ...services.gmail import get_active_gmail_user_id
 
 from .agent import ExecutionAgent
 from .tools.scheduling import SCHEMA as SCHEDULING_SCHEMA
@@ -27,6 +30,7 @@ class ExecutionResult:
     error: Optional[str] = None
     tools_executed: List[str] = None
     user_response: Optional[str] = None
+    instructions: Optional[str] = None
 
 
 class ExecutionAgentRuntime:
@@ -47,12 +51,18 @@ class ExecutionAgentRuntime:
             raise ValueError("No model provider configured. Set OPENROUTER_API_KEY or add an OpenAI-compatible model in Settings → Model.")
 
     # Main execution loop for running agent with LLM calls and tool execution
-    @traced("execution", lambda self, instructions, scheduling=False: (self.agent.name, {"instructions": instructions, "access": ["Agent execution history", "Gmail connection status"]}))
+    @traced(
+        "execution",
+        lambda self, instructions, scheduling=False: (
+            self.agent.name,
+            {"instructions": instructions, "access": ["Agent execution history", "Gmail connection status"]},
+        ),
+    )
     async def execute(self, instructions: str, scheduling: bool = False) -> ExecutionResult:
         """Execute the agent with given instructions."""
         try:
             # Build system prompt with history
-            system_prompt = self.agent.build_system_prompt_with_history()
+            system_prompt = self.agent.build_system_prompt() if current_request.get() else self.agent.build_system_prompt_with_history()
 
             # Start conversation with the instruction
             messages = [{"role": "user", "content": instructions}]
@@ -60,6 +70,7 @@ class ExecutionAgentRuntime:
                 self.tool_schemas = [SCHEDULING_SCHEMA]
                 self.tool_registry = {"scheduleTask": self.tool_registry["scheduleTask"]}
             tools_executed: List[str] = []
+            tool_errors: Dict[str, str] = {}
             final_response: Optional[str] = None
             scheduling_attempted = scheduling
             scheduling_error = "The model did not provide a valid task and future time. Please specify both."
@@ -86,7 +97,12 @@ class ExecutionAgentRuntime:
                 if not parsed_tool_calls:
                     final_response = assistant_entry["content"] or "No action required."
                     if scheduling and iteration == 0:
-                        messages.append({"role": "user", "content": "The scheduling tool is available in this request. Use scheduleTask if the task and future time are clear. Otherwise explain which details are missing. Do not claim a reminder was scheduled without calling the tool."})
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "The scheduling tool is available in this request. Use scheduleTask if the task and future time are clear. Otherwise explain which details are missing. Do not claim a reminder was scheduled without calling the tool.",
+                            }
+                        )
                         continue
                     if scheduling_attempted:
                         final_response = "Nothing was scheduled. " + scheduling_error
@@ -117,6 +133,7 @@ class ExecutionAgentRuntime:
                     success, result = await self._execute_tool(tool_name, tool_args)
 
                     if success:
+                        tool_errors.pop(tool_name, None)
                         logger.info(f"[{self.agent.name}] Tool {tool_name} completed successfully")
                         record_payload = self._safe_json_dump(result)
                     else:
@@ -124,6 +141,7 @@ class ExecutionAgentRuntime:
                         logger.warning(f"[{self.agent.name}] Tool {tool_name} failed: {error_detail}")
                         record_payload = error_detail
                         scheduling_error = str(error_detail)
+                        tool_errors[tool_name] = str(error_detail)
                         if tool_name in ("scheduleTask", "createTrigger", "updateTrigger"):
                             schedule_errors.append(scheduling_error)
 
@@ -142,7 +160,14 @@ class ExecutionAgentRuntime:
                 if verified_messages:
                     final_response = "\n\n".join(verified_messages + [f"A schedule could not be saved: {error}" for error in schedule_errors])
                     self.agent.record_response(final_response)
-                    return ExecutionResult(agent_name=self.agent.name, success=not schedule_errors, response=final_response, error="; ".join(schedule_errors) or None, tools_executed=tools_executed, user_response=final_response)
+                    return ExecutionResult(
+                        agent_name=self.agent.name,
+                        success=not schedule_errors,
+                        response=final_response,
+                        error="; ".join(schedule_errors) or None,
+                        tools_executed=tools_executed,
+                        user_response=final_response,
+                    )
 
             else:
                 raise RuntimeError("Reached tool iteration limit without final response")
@@ -150,9 +175,20 @@ class ExecutionAgentRuntime:
             if final_response is None:
                 raise RuntimeError("LLM did not return a final response")
 
+            if tool_errors and not scheduling_attempted:
+                detail = "; ".join(f"{name}: {error}" for name, error in tool_errors.items())
+                final_response = f"The task could not be completed: {detail}"
+                self.agent.record_response(final_response)
+                return ExecutionResult(agent_name=self.agent.name, success=False, response=final_response, error=detail, tools_executed=tools_executed)
             self.agent.record_response(final_response)
 
-            return ExecutionResult(agent_name=self.agent.name, success=not scheduling_attempted, response=final_response, error=scheduling_error if scheduling_attempted else None, tools_executed=tools_executed)
+            return ExecutionResult(
+                agent_name=self.agent.name,
+                success=not scheduling_attempted,
+                response=final_response,
+                error=scheduling_error if scheduling_attempted else None,
+                tools_executed=tools_executed,
+            )
 
         except Exception as e:
             logger.error(f"[{self.agent.name}] Execution failed: {e}")
@@ -234,6 +270,21 @@ class ExecutionAgentRuntime:
     @traced("tool", lambda self, tool_name, arguments: (tool_name, arguments))
     async def _execute_tool(self, tool_name: str, arguments: Dict) -> Tuple[bool, Any]:
         """Execute a tool. Returns (success, result)."""
+        context = current_request.get()
+        if context and context.stopped_reason:
+            raise asyncio.CancelledError()
+        mailbox = get_active_gmail_user_id() if tool_name == "task_email_search" and context else None
+        if context and context.retry_of and tool_name != "task_email_search":
+            return False, {"error": "Saved-result retries only permit email searches. Start a new request for actions that change data."}
+        if context and tool_name != "task_email_search":
+            context.read_only = False
+            read_checkpoints.invalidate(context.request_id)
+        if mailbox:
+            found, cached = read_checkpoints.get(tool_name, arguments, mailbox)
+            if found:
+                read_checkpoints.put(tool_name, arguments, mailbox, cached)
+                logger.info("Reusing completed email read for request %s", context.request_id)
+                return True, cached
         tool_func = self.tool_registry.get(tool_name)
         if not tool_func:
             return False, {"error": f"Unknown tool: {tool_name}"}
@@ -247,6 +298,8 @@ class ExecutionAgentRuntime:
                 result = await result
             if isinstance(result, dict) and (result.get("error") or result.get("success") is False or result.get("successful") is False):
                 return False, {"error": result.get("error") or "Tool reported failure"}
+            if mailbox:
+                read_checkpoints.put(tool_name, arguments, mailbox, result)
             return True, result
         except Exception as e:
             return False, {"error": str(e)}

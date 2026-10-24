@@ -16,13 +16,13 @@ _SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": TASK_TOOL_NAME,
-            "description": "Expand a raw Gmail search request into multiple targeted queries and return relevant emails.",
+            "description": "Search Gmail. Pass a Gmail query directly when known to avoid another planning model. All result pages are fetched and duplicate message IDs removed; these are matching emails, not verified orders.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "search_query": {
                         "type": "string",
-                        "description": "Raw search request describing the emails to find.",
+                        "description": "A Gmail query (preferred, e.g. Chipotle after:2026/01/01 before:2027/01/01) or a natural-language search request.",
                     },
                 },
                 "required": ["search_query"],
@@ -42,17 +42,17 @@ class GmailSearchEmail(BaseModel):
     id: str  # message_id from Gmail API
     thread_id: Optional[str] = None
     query: str  # The search query that found this email
-    
+
     # Email metadata
     subject: str
     sender: str
     recipient: str  # to field
     timestamp: datetime
     label_ids: List[str] = Field(default_factory=list)
-    
+
     # Clean content (primary field for LLM consumption)
     clean_text: str  # Processed, readable email content
-    
+
     # Attachment information
     has_attachments: bool = False
     attachment_count: int = 0
@@ -99,6 +99,7 @@ _COMPLETION_SCHEMAS: List[Dict[str, Any]] = [
         },
     }
 ]
+
 
 def get_completion_schema() -> Dict[str, Any]:
     return _COMPLETION_SCHEMAS[0]

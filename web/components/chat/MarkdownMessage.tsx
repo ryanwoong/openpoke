@@ -1,6 +1,6 @@
-import React from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export function MarkdownMessage({ text }: { text: string }) {
   return (
@@ -20,8 +20,21 @@ export function MarkdownMessage({ text }: { text: string }) {
             </a>
           ),
           img: ({ alt }) => <span>{alt}</span>,
+          th: ({ children, style }) => (
+            <th
+              scope="col"
+              style={style}
+            >
+              {children}
+            </th>
+          ),
           table: ({ children }) => (
-            <div className="overflow-x-auto">
+            <div
+              className="markdown-table"
+              role="region"
+              aria-label="Message table"
+              tabIndex={0}
+            >
               <table>{children}</table>
             </div>
           ),

@@ -76,16 +76,65 @@
   overflow-wrap: normal;
 }
 
+.markdown-table {
+  max-width: 100%;
+  margin: 14px 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid #dfe5dc;
+  border-radius: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: #bdc9b9 #f5f7f2;
+}
+.markdown-table:focus-visible {
+  outline: 2px solid #507e62;
+  outline-offset: 3px;
+}
 .markdown-message table {
-  @apply my-2 w-full border-collapse text-left;
+  width: 100%;
+  min-width: 32rem;
+  border-collapse: separate;
+  border-spacing: 0;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: normal;
+  word-break: normal;
+  font-variant-numeric: tabular-nums;
+}
+.markdown-message table:has(th:nth-child(4)) {
+  min-width: 42rem;
 }
 
 .markdown-message :is(th, td) {
-  @apply border border-gray-300 px-3 py-1.5;
+  min-width: 7rem;
+  padding: 11px 14px;
+  vertical-align: top;
 }
-
 .markdown-message th {
-  @apply bg-gray-200 font-semibold;
+  background: #f0f4ed;
+  border-bottom: 1px solid #dfe5dc;
+  color: #52614e;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.markdown-message tbody tr + tr td {
+  border-top: 1px solid #e8ece5;
+}
+.markdown-message tbody tr:nth-child(even) {
+  background: #fafbf8;
+}
+.markdown-message tbody tr {
+  transition: background-color var(--motion-fast) ease;
+}
+.markdown-message tbody tr:hover {
+  background: #f1f5ed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .markdown-message tbody tr {
+    transition: none;
+  }
 }
 
 .markdown-message hr {

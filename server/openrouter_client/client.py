@@ -143,16 +143,33 @@ async def request_chat_completion(
     async def summarize(source: str, output_tokens: int) -> str:
         summary_payload = {
             "model": target.model,
-            "messages": [{"role": "system", "content": SUMMARY_SYSTEM}, {"role": "user", "content": source}],
+            "messages": [
+                {
+                    "role": "system",
+                    "content": SUMMARY_SYSTEM
+                    + f" Keep the final notes under {max(64, output_tokens // 2)} words. Spend the available output on factual notes, not a reasoning narrative.",
+                },
+                {"role": "user", "content": source},
+            ],
             "stream": False,
-            "max_tokens": output_tokens,
         }
-        response = await _post_completion(summary_payload, target, api_key, base_url)
-        choices = response.get("choices") or []
-        content = (choices[0].get("message") or {}).get("content") if choices else None
-        if not isinstance(content, str) or not content.strip() or response.get("choices", [{}])[0].get("finish_reason") == "length":
-            raise ContextBudgetError("The model could not finish a context summary. Narrow the request or choose a model with a larger context window.")
-        return content.strip()
+        capacity = min(8192, window - estimate_tokens(summary_payload) - 512)
+        if capacity < 128:
+            raise ContextBudgetError("The source batch leaves too little room for a summary. Narrow the search or split the task.")
+        allowance = min(capacity, max(1024, output_tokens * 2))
+        for summary_attempt in range(3):
+            summary_payload["max_tokens"] = allowance
+            response = await _post_completion(summary_payload, target, api_key, base_url)
+            choices = response.get("choices") or []
+            choice = choices[0] if choices else {}
+            content = (choice.get("message") or {}).get("content")
+            if isinstance(content, str) and content.strip() and choice.get("finish_reason") != "length":
+                return content.strip()
+            if summary_attempt == 2 or allowance >= capacity:
+                break
+            allowance = min(capacity, allowance * 2)
+            logger.info("Retrying incomplete context summary: model=%s output_tokens=%d", target.model, allowance)
+        raise ContextBudgetError("The model could not complete a context summary after bounded retries. Try a smaller search or split the task.")
 
     for attempt in range(2):
         try:

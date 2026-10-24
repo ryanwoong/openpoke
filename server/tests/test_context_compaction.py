@@ -308,6 +308,65 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Current exact task", sent[-1]["messages"][-1]["content"])
         self.assertTrue(all("tools" not in payload for payload in sent[:-1]))
 
+    async def test_truncated_reasoning_summary_retries_without_replaying_task_tools(self):
+        target = model_settings.CompletionTarget("Local", "reasoning", "http://test/v1", None, 8192)
+        attempts = {}
+        regular = []
+        tools = [{"type": "function", "function": {"name": "scheduleTask", "parameters": {"type": "object"}}}]
+        source = "<conversation_history>" + "Old memory " * 3000 + "</conversation_history><new_user_message>Keep this task exact</new_user_message>"
+
+        async def send(payload, *args):
+            if payload["messages"][0]["content"].startswith("Compact reference material"):
+                self.assertNotIn("tools", payload)
+                self.assertLess(estimate_tokens(payload) + payload["max_tokens"], 8192)
+                key = payload["messages"][1]["content"]
+                budgets = attempts.setdefault(key, [])
+                budgets.append(payload["max_tokens"])
+                if len(budgets) < 3:
+                    return {
+                        "choices": [
+                            {"message": {"content": "" if len(budgets) == 1 else "Incomplete notes", "reasoning": "Thinking"}, "finish_reason": "length"}
+                        ]
+                    }
+                return {"choices": [{"message": {"content": "Complete factual notes"}, "finish_reason": "stop"}]}
+            regular.append(copy.deepcopy(payload))
+            return {"choices": [{"message": {"content": "Done"}}]}
+
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
+            client, "_post_completion", side_effect=send
+        ):
+            await client.request_chat_completion(model="reasoning", messages=[{"role": "user", "content": source}], tools=tools)
+        self.assertTrue(attempts)
+        for budgets in attempts.values():
+            self.assertEqual(len(budgets), 3)
+            self.assertGreaterEqual(budgets[0], 1024)
+            self.assertLess(budgets[0], budgets[1])
+            self.assertLess(budgets[1], budgets[2])
+        self.assertEqual(len(regular), 1)
+        self.assertEqual(regular[0]["tools"], tools)
+        self.assertIn("Keep this task exact", regular[0]["messages"][-1]["content"])
+        self.assertTrue(all("Incomplete notes" not in value for value in self.compactor.summaries.values()))
+
+    async def test_summary_retry_stops_at_the_available_context_capacity(self):
+        target = model_settings.CompletionTarget("Local", "small", "http://test/v1", None, 2048)
+        send = AsyncMock(return_value={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
+        source = "<conversation_history>" + "Old memory " * 1000 + "</conversation_history><new_user_message>Exact task</new_user_message>"
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
+            client, "_post_completion", send
+        ):
+            with self.assertRaisesRegex(ContextBudgetError, "context summary"):
+                await client.request_chat_completion(model="small", messages=[{"role": "user", "content": source}])
+        self.assertTrue(send.await_args_list)
+        by_source = {}
+        for call in send.await_args_list:
+            payload = call.args[0]
+            self.assertNotIn("tools", payload)
+            self.assertLess(estimate_tokens(payload) + payload["max_tokens"], 2048)
+            key = payload["messages"][1]["content"]
+            by_source[key] = by_source.get(key, 0) + 1
+        self.assertTrue(all(count <= 3 for count in by_source.values()))
+        self.assertEqual(self.compactor.summaries, {})
+
     async def test_summary_failure_does_not_send_uncompacted_payload(self):
         target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 8192)
         send = AsyncMock(return_value={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})

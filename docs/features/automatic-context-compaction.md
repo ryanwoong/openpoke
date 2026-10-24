@@ -12,11 +12,11 @@ Token counts use a UTF-8-size estimate (serialized bytes / 3 plus overhead), not
 
 `server/openrouter_client/context.py` operates on a deep copy:
 
-- Summarize older framed history while retaining up to six recent complete entries within a bounded allowance. Execution history starts with the latest ten tasks and explicitly labels that scope; full logs remain saved. Background working memory also summarizes under token pressure before its message-count threshold.
+- Summarize older framed history while retaining up to six recent complete entries within a bounded allowance. Execution history, when used, starts with the latest ten tasks and explicitly labels that scope; full logs remain saved. Workers dispatched from a chat request use their current instructions and tool results instead of another run’s execution history. Background working memory also summarizes under token pressure before its message-count threshold.
 - Batch large successful email-search results into bounded chunks. Oversized email bodies retain their identifiers/metadata in each fragment. Summary calls use the selected model, expose no tools, and run with at most three concurrent requests. Notes must preserve evidence, distinguish receipts from promotions, and deduplicate order IDs across chunks/queries; email matches are never an order total.
 - Reduce accumulated notes when necessary. Older tool exchanges are replaced only as whole user turns. System rules, current requests, tool schemas, and current tool-call arguments remain intact. Compaction cannot approve drafts or execute tools.
 
-A 128-entry in-process cache reuses summaries by provider/model, source, task, and output budget. Sources exceeding 64 chunks, failed/truncated summaries, or irreducibly oversized requests fail clearly. Compaction adds model calls and remains subject to normal task deadlines. Summary calls appear as context-compaction spans in Execution.
+A 128-entry in-process cache reuses summaries by provider/model, source, task, and output budget. Sources exceeding 64 chunks, failed/truncated summaries, or irreducibly oversized requests fail clearly. Compaction adds model calls and remains subject to separate phase/model deadlines and a 600-second default overall chat deadline. See [chat execution and compaction fixes](../bugs/chat-and-compaction-fixes.md) for settings, cancellation, and saved-read retries. Summary calls appear as context-compaction spans in Execution.
 
 ## Storage and checks
 
@@ -64,7 +64,7 @@ The input object is not mutated. Failed tool results, unrecognized tools, and cu
 Before summarizing, the compactor archives the complete source block. It then:
 
 - Chooses a target source-chunk byte size of `max(512, min(18000, 2 × (budget // 4)))`; more than **64 chunks** fails explicitly.
-- Requests between **128 and 768 output tokens per chunk**, depending on the input budget. A shared semaphore permits at most three summary calls concurrently on the current event loop, including calls from simultaneous compactions.
+- Targets **128–768 tokens of notes per chunk**. The client separately allows at least **1024 generation tokens** when the window permits, leaving room for models that spend output tokens on reasoning. Empty or length-truncated responses retry at most twice with a doubled allowance, capped at **8192 tokens** and the estimated remaining context minus 512 tokens. Only complete, nonempty notes are cached; retries never expose or replay application tools. A shared semaphore permits at most three summary calls concurrently on the current event loop, including calls from simultaneous compactions.
 - Supplies the current task when summarizing search results. `SUMMARY_SYSTEM` tells the model to treat sources as data, preserve evidence and uncertainties, and avoid inventing facts or adding overlapping batch totals. The callback in `client.py` sends these calls without tool schemas and rejects empty or output-truncated summaries.
 - Joins the notes and, when needed, performs up to **four reduction rounds**, targeting `max(512, budget // 3)` estimated tokens. A round that does not shrink the notes fails. An empty result or one still above `max(1024, budget // 2)` estimated tokens also fails; `prepare()` separately checks the full request afterward.
 
@@ -77,3 +77,11 @@ Returned notes are HTML-escaped inside a `<compacted_reference artifact="…">` 
 `archive()` hashes each full source block and writes `<hash>.json` containing `{"source": "…"}`. Exclusive creation avoids concurrent rewrites of the same snapshot. These files preserve the original reference data for local inspection; the model cannot read them through a tool merely because it sees an artifact ID.
 
 `clear()` holds a reentrant lock, increments a generation counter, clears cached notes, and deletes snapshots. Each summary checks that generation before sending queued work, after receiving a response, and before returning combined notes. Work already sent to a provider may finish, but its stale result cannot repopulate the cleared cache. Unfinished sibling tasks are cancelled and awaited when a batch exits. The separate working-memory generation check in the summarization service prevents a stale briefing from being written after Clear Data.
+
+## Request and result isolation
+
+`server/services/conversation/request_context.py` binds a request ID and original user prompt with a `ContextVar`. Async workers inherit that context; concurrent messages receive separate scopes. Conversation records persist `request_id`, and chat history exposes it so late replies and activity stay associated with the initiating question. Legacy records without IDs retain the earlier matching behavior.
+
+Result delivery receives the original question and that batch’s successful results, without the latest global conversation history. It cannot dispatch additional workers and stops after its first delivered answer. If any batch member fails, the batch emits a concise failure instead of asking the model to infer a complete answer from partial successes. Technical errors and full instructions remain in execution diagnostics. Failure messages are marked separately so the UI does not repeat the same error in a banner.
+
+Scheduled updates have their own conversation tag and source; they are independent of foreground task completion. These boundaries prevent cross-request context reuse, but factual accuracy within a successful model answer still depends on the tool evidence and the model’s interpretation of it.

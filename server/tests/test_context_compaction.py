@@ -35,6 +35,22 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.summary.assert_not_awaited()
         self.assertFalse(self.compactor.directory.exists())
 
+    def test_execution_history_defaults_to_recent_complete_tasks_with_an_explicit_scope(self):
+        from server.agents.execution_agent.agent import ExecutionAgent
+
+        transcript = "\n".join(f"<agent_request>Task {index:02}</agent_request>\n<agent_response>Result {index:02}</agent_response>" for index in range(12))
+        store = Mock(load_transcript=Mock(return_value=transcript))
+        with patch("server.agents.execution_agent.agent.get_execution_agent_logs", return_value=store):
+            agent = ExecutionAgent("Worker")
+            agent.build_system_prompt = Mock(return_value="Exact rules")
+            prompt = agent.build_system_prompt_with_history()
+        self.assertNotIn("Task 00", prompt)
+        self.assertNotIn("Task 01", prompt)
+        self.assertIn("Task 02", prompt)
+        self.assertIn("Result 11", prompt)
+        self.assertIn("not a complete audit", prompt)
+        self.assertEqual(store.load_transcript.return_value, transcript)
+
     async def test_execution_history_compacts_without_changing_system_rules_or_current_task(self):
         history = "<agent_response>" + "Old observation. " * 2500 + "</agent_response>\n<agent_request>Latest exact request</agent_request>"
         rules = "Never send without approval."

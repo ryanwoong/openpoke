@@ -125,7 +125,12 @@ def traced(kind, describe):
                     finish(span, result)
                     return result
                 except BaseException as exc:
-                    trace_store.finish(span, "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed", {"error": str(exc)})
+                    from .services.conversation.request_context import current_request
+
+                    context = current_request.get()
+                    reason = context.stopped_reason if context and isinstance(exc, asyncio.CancelledError) else None
+                    error = "Task timed out at its overall deadline" if reason == "timeout" else "Task cancelled by user" if reason == "cancelled" else str(exc)
+                    trace_store.finish(span, "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed", {"error": error})
                     raise
                 finally:
                     _current_span.reset(token)

@@ -151,6 +151,9 @@ class ConversationLog:
         self._working_memory_log.append_entry("agent_message", content, timestamp)
 
     def record_reply(self, content: str) -> None:
+        context = current_request.get()
+        if context and context.stopped_reason:
+            return
         if scheduled_delivery.get():
             self.record_scheduled_update(content)
             return
@@ -158,6 +161,9 @@ class ConversationLog:
         self._working_memory_log.append_entry("poke_reply", content, timestamp)
 
     def record_task_failure(self, content: str) -> None:
+        context = current_request.get()
+        if context and context.stopped_reason == "cleared":
+            return
         if scheduled_delivery.get():
             self.record_scheduled_update(content)
             return

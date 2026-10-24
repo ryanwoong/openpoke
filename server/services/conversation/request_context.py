@@ -1,8 +1,10 @@
-"""Keep the initiating request attached to asynchronous workers and their replies."""
+"""Keep task ownership, deadlines, and cancellation across asynchronous handoffs."""
 
+import asyncio
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 
@@ -10,18 +12,85 @@ from uuid import uuid4
 class ChatRequestContext:
     request_id: str
     prompt: str
+    deadline: float | None = None
+    tasks: set[asyncio.Task] = field(default_factory=set)
+    timer: asyncio.TimerHandle | None = None
+    stopped_reason: str | None = None
+    read_only: bool = True
 
 
 current_request: ContextVar[ChatRequestContext | None] = ContextVar("chat_request", default=None)
+_requests: dict[str, ChatRequestContext] = {}
+
+
+def remaining_seconds() -> float | None:
+    context = current_request.get()
+    return max(0, context.deadline - time.monotonic()) if context and context.deadline is not None else None
+
+
+def _release(context, task):
+    context.tasks.discard(task)
+    if not context.tasks:
+        if context.timer:
+            context.timer.cancel()
+        if _requests.get(context.request_id) is context:
+            _requests.pop(context.request_id, None)
+
+
+def create_request_task(coroutine):
+    task = asyncio.create_task(coroutine)
+    context = current_request.get()
+    if context:
+        context.tasks.add(task)
+        task.add_done_callback(lambda finished: _release(context, finished))
+    return task
+
+
+def stop_request(request_id: str, reason: str = "cancelled") -> bool:
+    context = _requests.get(request_id)
+    if not context or context.stopped_reason:
+        return False
+    context.stopped_reason = reason
+    try:
+        if reason != "cleared":
+            from . import get_conversation_log
+
+            token = current_request.set(context)
+            try:
+                message = "Task timed out at its overall deadline" if reason == "timeout" else "Task cancelled by user"
+                get_conversation_log().record_task_failure(task_failure_message(message))
+            finally:
+                current_request.reset(token)
+    finally:
+        for task in tuple(context.tasks):
+            task.get_loop().call_soon_threadsafe(task.cancel)
+
+    return True
+
+
+def clear_requests():
+    for request_id in tuple(_requests):
+        stop_request(request_id, "cleared")
 
 
 @contextmanager
-def request_scope(request_id: str | None, prompt: str):
-    context = ChatRequestContext(request_id or uuid4().hex, prompt)
+def request_scope(request_id: str | None, prompt: str, *, timeout_seconds: float | None = None):
+    context = ChatRequestContext(request_id or uuid4().hex, prompt, deadline=time.monotonic() + timeout_seconds if timeout_seconds else None)
     token = current_request.set(context)
+    try:
+        owner = asyncio.current_task()
+    except RuntimeError:
+        owner = None
+    if owner:
+        _requests[context.request_id] = context
+        context.tasks.add(owner)
+        if timeout_seconds:
+            context.timer = asyncio.get_running_loop().call_later(timeout_seconds, stop_request, context.request_id, "timeout")
     try:
         yield context
     finally:
+        if owner:
+            _release(context, owner)
         current_request.reset(token)
 
 

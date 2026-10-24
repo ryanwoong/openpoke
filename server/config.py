@@ -62,7 +62,10 @@ class Settings(BaseModel):
     composio_gmail_auth_config_id: Optional[str] = Field(default=os.getenv("COMPOSIO_GMAIL_AUTH_CONFIG_ID"))
     composio_api_key: Optional[str] = Field(default=os.getenv("COMPOSIO_API_KEY"))
 
-    execution_timeout_seconds: int = Field(default=_env_int("OPENPOKE_EXECUTION_TIMEOUT_SECONDS", 180), ge=1)
+    execution_timeout_seconds: int = Field(default=_env_int("OPENPOKE_EXECUTION_TIMEOUT_SECONDS", 600), ge=1)
+
+    model_timeout_seconds: int = Field(default=_env_int("OPENPOKE_MODEL_TIMEOUT_SECONDS", 180), ge=1)
+    context_compaction_timeout_seconds: int = Field(default=_env_int("OPENPOKE_CONTEXT_COMPACTION_TIMEOUT_SECONDS", 240), ge=1)
 
     context_window_tokens: int = Field(default=_env_int("OPENPOKE_CONTEXT_WINDOW_TOKENS", 32768), ge=2048)
     context_output_tokens: int = Field(default=_env_int("OPENPOKE_CONTEXT_OUTPUT_TOKENS", 4096), ge=128)

@@ -12,7 +12,7 @@ from .runtime import ExecutionAgentRuntime, ExecutionResult
 from ...logging_config import logger
 from ...config import get_settings
 from ...execution_trace import current_run_id
-from ...services.conversation.request_context import task_failure_message
+from ...services.conversation.request_context import task_failure_message, remaining_seconds, current_request
 
 
 @dataclass
@@ -63,9 +63,19 @@ class ExecutionBatchManager:
         try:
             logger.info(f"[{agent_name}] Execution started")
             runtime = ExecutionAgentRuntime(agent_name=agent_name)
-            result = await asyncio.wait_for(runtime.execute(instructions), timeout=self.timeout_seconds)
+            remaining = remaining_seconds()
+            timeout = min(self.timeout_seconds, remaining) if remaining is not None else self.timeout_seconds
+            result = await asyncio.wait_for(runtime.execute(instructions), timeout=timeout)
             status = "SUCCESS" if result.success else "FAILED"
             logger.info(f"[{agent_name}] Execution finished: {status}")
+        except asyncio.CancelledError:
+            async with self._batch_lock:
+                state = self._batch_states.get(batch_id)
+                if state:
+                    state.pending -= 1
+                    if state.pending == 0:
+                        self._batch_states.pop(batch_id, None)
+            raise
         except asyncio.TimeoutError:
             logger.error(f"[{agent_name}] Execution timed out after {self.timeout_seconds}s")
             result = ExecutionResult(
@@ -123,6 +133,9 @@ class ExecutionBatchManager:
     ) -> None:
         """Record the execution result and dispatch when the batch drains."""
 
+        context = current_request.get()
+        if context and context.stopped_reason:
+            return
         dispatch_payload: Optional[str] = None
         verified_replies: List[str] = []
         failure_replies: List[str] = []

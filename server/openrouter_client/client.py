@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from ..execution_trace import traced
+from ..services.conversation.request_context import remaining_seconds
 
 from ..config import get_settings
 from ..logging_config import logger
@@ -85,20 +87,27 @@ async def _post_completion(payload, target, api_key, base_url):
     label = target.label
     url = f"{(target.base_url or base_url).rstrip('/')}/chat/completions"
     logger.info("%s request: model=%s, tools=%d", label, payload["model"], len(payload.get("tools") or []))
+    timeout = get_settings().model_timeout_seconds
+    remaining = remaining_seconds()
+    timeout = min(timeout, remaining) if remaining is not None else timeout
+    if timeout <= 0:
+        raise OpenRouterError("Task timed out at its overall deadline")
     for attempt in range(2):
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(
-                    url,
-                    headers=_headers(api_key=target.api_key, required=False) if custom_endpoint else _headers(api_key=api_key),
-                    json=payload,
-                    # Self-hosted models can take minutes on long prompts.
-                    timeout=300.0 if custom_endpoint else 60.0,
-                )
+                async with asyncio.timeout(timeout):
+                    response = await client.post(
+                        url,
+                        headers=_headers(api_key=target.api_key, required=False) if custom_endpoint else _headers(api_key=api_key),
+                        json=payload,
+                        timeout=timeout,
+                    )
                 response.raise_for_status()
                 result = response.json()
                 logger.info("%s response: requested_model=%s, returned_model=%s", label, payload["model"], result.get("model", "unknown"))
                 return result
+            except (TimeoutError, httpx.TimeoutException) as exc:
+                raise OpenRouterError(f"Model request timed out after {timeout:g} seconds") from exc
             except httpx.HTTPStatusError as exc:
                 _handle_response_error(exc, label)
             except (httpx.ConnectError, ssl.SSLError) as exc:
@@ -173,7 +182,14 @@ async def request_chat_completion(
 
     for attempt in range(2):
         try:
-            prepared, compacted = await context_compactor.prepare(payload, budget, summarize, str(scope))
+            compaction_timeout = get_settings().context_compaction_timeout_seconds
+            remaining = remaining_seconds()
+            compaction_timeout = min(compaction_timeout, remaining) if remaining is not None else compaction_timeout
+            try:
+                async with asyncio.timeout(compaction_timeout):
+                    prepared, compacted = await context_compactor.prepare(payload, budget, summarize, str(scope))
+            except TimeoutError as exc:
+                raise ContextBudgetError(f"Context compaction timed out after {compaction_timeout:g} seconds") from exc
             logger.debug("Model context: model=%s estimated_tokens=%d input_budget=%d compacted=%s", target.model, estimate_tokens(prepared), budget, compacted)
             return await _post_completion(prepared, target, api_key, base_url)
         except ContextWindowError as exc:

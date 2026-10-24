@@ -1,5 +1,6 @@
 """Interaction Agent Runtime - handles LLM calls for user and agent turns."""
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from html import escape
@@ -76,7 +77,7 @@ class InteractionAgentRuntime:
     )
     async def execute(self, user_message: str, request_id: Optional[str] = None) -> InteractionResult:
         """Handle a user-authored message."""
-        with request_scope(request_id, user_message):
+        with request_scope(request_id, user_message, timeout_seconds=get_settings().execution_timeout_seconds):
             return await self._execute_user_message(user_message)
 
     async def _execute_user_message(self, user_message: str) -> InteractionResult:
@@ -356,6 +357,9 @@ class InteractionAgentRuntime:
     def _execute_tool(self, tool_call: _ToolCall) -> ToolResult:
         """Execute a tool call and convert low-level errors into structured results."""
 
+        context = current_request.get()
+        if context and context.stopped_reason:
+            raise asyncio.CancelledError()
         if "__invalid_arguments__" in tool_call.arguments:
             error = tool_call.arguments["__invalid_arguments__"]
             self._log_tool_invocation(tool_call, stage="rejected", detail={"error": error})

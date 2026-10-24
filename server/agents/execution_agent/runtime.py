@@ -268,6 +268,9 @@ class ExecutionAgentRuntime:
     @traced("tool", lambda self, tool_name, arguments: (tool_name, arguments))
     async def _execute_tool(self, tool_name: str, arguments: Dict) -> Tuple[bool, Any]:
         """Execute a tool. Returns (success, result)."""
+        context = current_request.get()
+        if context and context.stopped_reason:
+            raise asyncio.CancelledError()
         tool_func = self.tool_registry.get(tool_name)
         if not tool_func:
             return False, {"error": f"Unknown tool: {tool_name}"}

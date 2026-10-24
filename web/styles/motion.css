@@ -103,6 +103,27 @@ button:active:not(:disabled) {
   }
 }
 
+#execution:not([hidden]) .workspace-content-enter,
+#reminders:not([hidden]) .workspace-content-enter {
+  animation: workspace-content-in 280ms var(--motion-ease) backwards;
+}
+
+@keyframes workspace-content-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #execution:not([hidden]) .workspace-content-enter,
+  #reminders:not([hidden]) .workspace-content-enter {
+    animation: none;
+  }
+}
+
 .menu-popover {
   transform-origin: var(--menu-origin, top left);
 }

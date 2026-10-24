@@ -220,7 +220,7 @@ export function Reminders({ items, loading, error, onChange }: { items: Reminder
         <h1>Reminders</h1>
         <p>Your reminders, scheduled tasks, and emails.</p>
       </header>
-      <div className={styles.content}>
+      <div className={`${styles.content} workspace-content-enter`}>
         <div className={styles.toolbar}>
           <div
             className={styles.tabs}

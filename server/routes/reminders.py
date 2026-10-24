@@ -82,7 +82,7 @@ def change_reminder(trigger_id: int, change: ReminderChange):
         raise HTTPException(404, "Reminder not found")
     if version(record) != change.version:
         raise HTTPException(409, "This item changed. Refresh and review it before trying again.")
-    if not present(record)["editable"]:
+    if not present(record)["editable"] and not (change.action == "cancel" and present(record)["upcoming"]):
         raise HTTPException(409, "Only upcoming items that have not started can be changed.")
     action = decode_action(record.payload)
     fields = {}

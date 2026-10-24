@@ -107,7 +107,7 @@ class ReminderTests(unittest.TestCase):
         email = self.create("email")
         self.assertEqual(self.change(email, "edit", subject="Incomplete", start_time=self.future).status_code, 400)
 
-    def test_completed_cancelled_and_running_items_cannot_change(self):
+    def test_completed_and_cancelled_items_cannot_change(self):
         item = self.create()
         self.service.mark_as_completed(item["id"], agent_name=scheduling.AGENT_NAME)
         self.assertEqual(self.change(self.get(item["id"]), "cancel").status_code, 409)
@@ -116,7 +116,28 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(self.change(cancelled, "edit", message="Again", start_time=self.future).status_code, 409)
         item = self.create()
         self.service.update_if_unchanged(self.service.get_trigger(item["id"]), {"status": "running"})
-        self.assertEqual(self.change(self.get(item["id"]), "cancel").status_code, 409)
+        running = self.get(item["id"])
+        self.assertEqual(self.change(running, "edit", message="Changed", start_time=self.future).status_code, 409)
+        self.assertEqual(self.change(running, "cancel").json()["status"], "cancelled")
+
+    def test_cancel_running_item_is_not_resurrected_by_completion_or_failure(self):
+        for kind in ("reminder", "email"):
+            for recurrence in (None, "FREQ=DAILY"):
+                for outcome in ("success", "failure"):
+                    with self.subTest(kind=kind, recurrence=recurrence, outcome=outcome):
+                        item = self.create(kind, recurrence_rule=recurrence)
+                        running = self.service.update_if_unchanged(self.service.get_trigger(item["id"]), {"status": "running"})
+                        self.assertEqual(self.change(self.get(item["id"]), "cancel").status_code, 200)
+                        scheduler = TriggerScheduler()
+                        with patch("server.services.trigger_scheduler.get_conversation_log"):
+                            if outcome == "success":
+                                scheduler._handle_success(running, utc_now())
+                            else:
+                                scheduler._handle_failure(running, utc_now(), "Delivery failed")
+                        saved = self.get(item["id"])
+                        self.assertEqual(saved["status"], "cancelled")
+                        self.assertIsNone(saved["next_trigger"])
+                        self.assertFalse(saved["upcoming"])
 
     def test_atomic_conflict_rejects_mutation(self):
         item = self.create()

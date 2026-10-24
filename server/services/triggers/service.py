@@ -192,8 +192,7 @@ class TriggerService:
         fired_at: datetime,
     ) -> Optional[TriggerRecord]:
         if not trigger.recurrence_rule:
-            self.mark_as_completed(trigger.id, agent_name=trigger.agent_name)
-            return self._store.fetch_one(trigger.id, trigger.agent_name)
+            return self.update_if_unchanged(trigger, {"status": "completed", "next_trigger": None, "last_error": None})
 
         tz = resolve_timezone(trigger.timezone)
         next_fire = self._compute_next_after(trigger.recurrence_rule, fired_at, tz)
@@ -204,8 +203,7 @@ class TriggerService:
         }
         if next_fire is None:
             fields["status"] = "completed"
-        self._store.update(trigger.id, trigger.agent_name, fields)
-        return self._store.fetch_one(trigger.id, trigger.agent_name)
+        return self.update_if_unchanged(trigger, fields)
 
     def record_failure(self, trigger: TriggerRecord, error: str) -> None:
         self._store.update(

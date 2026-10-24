@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import styles from "./Reminders.module.css";
 
-export function ReminderActions({ label, onEdit, onDelete }: { label: string; onEdit: () => void; onDelete: () => void }) {
+export function ReminderActions({ label, onEdit, onDelete }: { label: string; onEdit?: () => void; onDelete: () => void }) {
   const [open, setOpen] = useState(false);
   const [present, setPresent] = useState(false);
   const menuId = useId();
@@ -74,7 +74,7 @@ export function ReminderActions({ label, onEdit, onDelete }: { label: string; on
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
-            initialFocus.current = event.key === "ArrowUp" ? 1 : 0;
+            initialFocus.current = event.key === "ArrowUp" && onEdit ? 1 : 0;
             setOpen(true);
           }
         }}
@@ -117,18 +117,20 @@ export function ReminderActions({ label, onEdit, onDelete }: { label: string; on
           aria-label={`Actions for ${label}`}
           onKeyDown={navigate}
         >
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!open}
-            tabIndex={-1}
-            onClick={() => {
-              close();
-              onEdit();
-            }}
-          >
-            Edit
-          </button>
+          {onEdit && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!open}
+              tabIndex={-1}
+              onClick={() => {
+                close();
+                onEdit();
+              }}
+            >
+              Edit
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"

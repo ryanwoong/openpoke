@@ -167,14 +167,12 @@ class TriggerScheduler:
                 "error": error,
             },
         )
-        self._service.record_failure(trigger, error)
         if trigger.payload.startswith(PAYLOAD_PREFIX):
             get_conversation_log().record_reply(f"Scheduled task failed: {error}")
         if trigger.recurrence_rule:
             self._service.schedule_next_occurrence(trigger, fired_at=fired_at)
         else:
-            self._service.update_trigger(trigger.id, agent_name=trigger.agent_name, status="paused")
-            self._service.clear_next_fire(trigger.id, agent_name=trigger.agent_name)
+            self._service.update_if_unchanged(trigger, {"status": "paused", "next_trigger": None, "last_error": error})
 
     def _format_instructions(self, trigger: TriggerRecord, fired_at: datetime) -> str:
         scheduled_for = trigger.next_trigger or _isoformat(fired_at)

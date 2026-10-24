@@ -155,7 +155,9 @@ function ItemDialog({ item, mode, onClose, onChange }: { item: Reminder; mode: "
         ) : (
           <>
             <p>{item.kind === "email" ? item.subject : item.message}</p>
-            <p className={styles.hint}>{item.recurrence_rule ? "This stops all future occurrences and removes the item from Upcoming. It will remain in History as cancelled." : "This stops the scheduled item and removes it from Upcoming. It will remain in History as cancelled."}</p>
+            <p className={styles.hint}>
+              {item.status === "running" ? "This removes the item from Upcoming and stops future occurrences. An action already in progress may still finish, including sending an email. The item will remain in History as cancelled." : item.recurrence_rule ? "This stops all future occurrences and removes the item from Upcoming. It will remain in History as cancelled." : "This stops the scheduled item and removes it from Upcoming. It will remain in History as cancelled."}
+            </p>
           </>
         )}
         {error && (
@@ -287,10 +289,10 @@ export function Reminders({ items, loading, error, onChange }: { items: Reminder
                     >
                       {labels[item.status]}
                     </span>
-                    {item.editable && (
+                    {item.upcoming && (
                       <ReminderActions
                         label={item.kind === "email" ? item.subject : item.message}
-                        onEdit={() => setDialog({ item, mode: "edit" })}
+                        onEdit={item.editable ? () => setDialog({ item, mode: "edit" }) : undefined}
                         onDelete={() => setDialog({ item, mode: "cancel" })}
                       />
                     )}

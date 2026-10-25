@@ -12,6 +12,11 @@ function span(id: string, overrides: Partial<ExecutionSpan> = {}): ExecutionSpan
 const activity: ChatActivity = { requestId: "request", userText: "Check email", occurrence: 2, steps: [] };
 const root = span("root", { kind: "interaction", parent_id: null, input: { request_id: "request" } });
 
+test("inbox previews show message details and indicate more results without claiming a total", () => {
+  const result = updateChatActivity([activity], [root, span("search", { status: "completed", output: [true, { mode: "preview", messages: [{ subject: "A reply", sender: "hello@example.com" }], has_more: true, total_count: null }] })]);
+  assert.deepEqual(result[0].steps, [{ id: "search", label: "Previewed 1 email · more available", status: "completed", emails: [{ subject: "A reply", sender: "hello@example.com" }] }]);
+});
+
 test("correlates by request ID, excludes background work, and suppresses nested Gmail calls", () => {
   const result = updateChatActivity([activity, { ...activity, requestId: "other" }], [root, span("search"), span("fetch", { kind: "access", parent_id: "search", label: "Gmail · GMAIL_FETCH_EMAILS" }), span("background", { kind: "access", run_id: "poll", parent_id: null, label: "Gmail · GMAIL_FETCH_EMAILS" })]);
   assert.deepEqual(result[0].steps, [{ id: "search", label: "Searching your inbox…", status: "running" }]);

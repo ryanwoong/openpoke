@@ -92,7 +92,7 @@ def build_registry(agent_name: str) -> Dict[str, Callable[..., Any]]:  # noqa: A
 
 
 # Run an agentic Gmail search for the provided query
-async def task_email_search(search_query: str) -> Any:
+async def task_email_search(search_query: str, mode: str = "auto") -> Any:
     """Run an agentic Gmail search for the provided query."""
     logger.info(f"[EMAIL_SEARCH] Starting search for: '{search_query}'")
 
@@ -106,6 +106,12 @@ async def task_email_search(search_query: str) -> Any:
     if not composio_user_id:
         logger.error(f"[EMAIL_SEARCH] Gmail not connected")
         return {"error": ERROR_GMAIL_NOT_CONNECTED}
+
+    if mode not in ("auto", "preview", "all"):
+        return {"error": "mode must be auto, preview, or all"}
+    inbox_query = re.fullmatch(r"(?:(?:is:unread|in:inbox|newer_than:\d+[dmy])\s*)+", cleaned_query, re.IGNORECASE)
+    if mode == "preview" or (mode == "auto" and inbox_query):
+        return await _preview_inbox(cleaned_query, composio_user_id)
 
     if re.search(r"(?:^|\s)(?:after|before|newer_than|older_than|from|to|subject|label|in|is|has):", cleaned_query, re.IGNORECASE):
         emails = {}
@@ -131,6 +137,54 @@ async def task_email_search(search_query: str) -> Any:
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception(f"[EMAIL_SEARCH] Search failed: {exc}")
         return {"error": f"Email search failed: {exc}"}
+
+
+async def _preview_inbox(query: str, composio_user_id: str) -> Dict[str, Any]:
+    arguments = {
+        "query": query,
+        "max_results": 10,
+        "include_payload": False,
+        "verbose": True,
+        "include_spam_trash": False,
+        "format": "metadata",
+        "metadata_headers": ["From", "To", "Subject", "Date"],
+    }
+    try:
+        raw = await asyncio.to_thread(execute_gmail_tool, "GMAIL_FETCH_EMAILS", composio_user_id, arguments=arguments)
+        if raw.get("successful") is False or raw.get("success") is False or raw.get("error"):
+            raise RuntimeError(raw.get("error") or "Gmail reported an unsuccessful request")
+        data = raw.get("data", raw)
+        if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
+            raise RuntimeError("Gmail returned no valid message list")
+        messages = {}
+        for message in data["messages"][:10]:
+            if not isinstance(message, dict):
+                raise RuntimeError("Gmail returned an invalid message")
+            identifier = message.get("messageId") or message.get("id")
+            if not isinstance(identifier, str) or not identifier:
+                raise RuntimeError("Gmail returned a message without an ID")
+            headers = {header["name"].lower(): header.get("value", "") for header in (message.get("payload") or {}).get("headers", []) if isinstance(header, dict) and isinstance(header.get("name"), str)}
+            messages[identifier] = {
+                "id": identifier[:128],
+                "thread_id": str(message.get("threadId") or "")[:128],
+                "subject": str(message.get("subject") or headers.get("subject") or "(No subject)")[:300],
+                "sender": str(message.get("sender") or headers.get("from") or "Unknown sender")[:200],
+                "recipient": str(message.get("to") or headers.get("to") or "")[:200],
+                "timestamp": str(message.get("messageTimestamp") or headers.get("date") or "")[:100],
+                "snippet": str(message.get("snippet") or message.get("preview") or "")[:280],
+            }
+        return {
+            "mode": "preview",
+            "query": query,
+            "messages": list(messages.values()),
+            "returned_count": len(messages),
+            "has_more": bool(data.get("nextPageToken")) or len(data["messages"]) > 10,
+            "total_count": None,
+            "content_scope": "Headers and snippets only; bodies were not read. This preview is not a total unread count. Use mode=all for complete searches or full content.",
+        }
+    except Exception as exc:
+        logger.warning("[EMAIL_SEARCH] Inbox preview failed: %s", exc)
+        return {"error": f"Gmail inbox preview failed: {exc}"}
 
 
 # Execute the main email search orchestration loop

@@ -38,12 +38,14 @@ function activityStep(span: ExecutionSpan): ActivityStep | null {
   if (status === "failed") label = `Couldn’t complete: ${labels[name][0].replace(/…$/, "").toLowerCase()}`;
   if (status === "cancelled") label = `Cancelled: ${labels[name][0].replace(/…$/, "").toLowerCase()}`;
   let emails: EmailSummary[] | undefined;
-  if (status === "completed" && name === "task_email_search" && Array.isArray(payload)) {
+  const preview = output.mode === "preview" && Array.isArray(output.messages);
+  const matches = preview ? (output.messages as Array<Record<string, unknown>>) : payload;
+  if (status === "completed" && name === "task_email_search" && Array.isArray(matches)) {
     // Trace sanitization retains at most 50 items, so a full list is a lower bound.
-    const count = payload.length;
-    const summaries = payload.filter((email) => typeof email?.subject === "string" && typeof email?.sender === "string").map((email) => ({ subject: email.subject.slice(0, 300) || "(No subject)", sender: email.sender.slice(0, 300) }));
+    const count = matches.length;
+    const summaries = matches.filter((email) => typeof email?.subject === "string" && typeof email?.sender === "string").map((email) => ({ subject: email.subject.slice(0, 300) || "(No subject)", sender: email.sender.slice(0, 300) }));
     if (summaries.length) emails = summaries;
-    label = `Found ${count}${count === 50 ? "+" : ""} matching email${count === 1 ? "" : "s"}`;
+    label = preview ? `Previewed ${count} email${count === 1 ? "" : "s"}${output.has_more ? " · more available" : ""}` : `Found ${count}${count === 50 ? "+" : ""} matching email${count === 1 ? "" : "s"}`;
   }
   return { id: span.id, label, status, ...(emails ? { emails } : {}) };
 }

@@ -47,9 +47,7 @@ class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
             completion([tool_call(search.SEARCH_TOOL_NAME, {"query": "newer_than:1d"})]),
             completion([tool_call(search.COMPLETE_TOOL_NAME, {"message_ids": []})]),
         ]
-        with patch.object(search, "request_chat_completion", AsyncMock(side_effect=responses)), patch.object(
-            search, "execute_gmail_tool", side_effect=RuntimeError("Gmail API unavailable")
-        ), patch.object(search._LOG_STORE, "record_action"):
+        with patch.object(search, "request_chat_completion", AsyncMock(side_effect=responses)), patch.object(search, "execute_gmail_tool", side_effect=RuntimeError("Gmail API unavailable")), patch.object(search._LOG_STORE, "record_action"):
             with self.assertRaisesRegex(RuntimeError, "No Gmail search completed successfully.*Gmail API unavailable"):
                 await self.run_search()
 
@@ -58,9 +56,7 @@ class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
             completion([tool_call(search.SEARCH_TOOL_NAME, {"query": "newer_than:1d"})]),
             completion([tool_call(search.COMPLETE_TOOL_NAME, {"message_ids": []})]),
         ]
-        with patch.object(search, "request_chat_completion", AsyncMock(side_effect=responses)), patch.object(
-            search, "execute_gmail_tool", return_value={"data": {"messages": []}}
-        ), patch.object(search, "parse_gmail_fetch_response", return_value=([], None)), patch.object(search._LOG_STORE, "record_action"):
+        with patch.object(search, "request_chat_completion", AsyncMock(side_effect=responses)), patch.object(search, "execute_gmail_tool", return_value={"data": {"messages": []}}), patch.object(search, "parse_gmail_fetch_response", return_value=([], None)), patch.object(search._LOG_STORE, "record_action"):
             self.assertEqual(await self.run_search(), [])
 
     def email(self, identifier):
@@ -74,18 +70,81 @@ class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
             clean_text="Order confirmed",
         )
 
+    async def test_inbox_check_is_a_bounded_metadata_preview_without_model_calls(self):
+        raw = {"data": {"messages": [{"messageId": str(i), "subject": "x" * 1000, "sender": "sender@example.com", "snippet": "s" * 1000, "messageText": "body" * 100000} for i in range(12)], "nextPageToken": "next-page"}}
+        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "execute_gmail_tool", return_value=raw) as fetch, patch.object(search, "request_chat_completion", AsyncMock()) as model:
+            result = await search.task_email_search("is:unread newer_than:7d")
+        fetch.assert_called_once()
+        arguments = fetch.call_args.kwargs["arguments"]
+        self.assertEqual(arguments["max_results"], 10)
+        self.assertEqual(arguments["format"], "metadata")
+        self.assertFalse(arguments["include_payload"])
+        self.assertNotIn("page_token", arguments)
+        self.assertEqual(result["returned_count"], 10)
+        self.assertTrue(result["has_more"])
+        self.assertIsNone(result["total_count"])
+        self.assertEqual(len(result["messages"][0]["snippet"]), 280)
+        self.assertNotIn("bodybody", json.dumps(result))
+        self.assertLess(len(json.dumps(result)), 12000)
+        model.assert_not_awaited()
+
+    async def test_explicit_preview_supports_native_gmail_headers_and_missing_snippets(self):
+        raw = {
+            "data": {
+                "messages": [
+                    {
+                        "id": "reply",
+                        "payload": {
+                            "headers": [
+                                {"name": "From", "value": "sender@example.com"},
+                                {"name": "Subject", "value": "Re: Hello"},
+                                {"name": "Date", "value": "Sat, 24 Oct 2026 06:20:48 +0000"},
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "execute_gmail_tool", return_value=raw):
+            result = await search.task_email_search("in:inbox from:sender@example.com", mode="preview")
+        message = result["messages"][0]
+        self.assertEqual(message["sender"], "sender@example.com")
+        self.assertEqual(message["subject"], "Re: Hello")
+        self.assertEqual(message["timestamp"], "Sat, 24 Oct 2026 06:20:48 +0000")
+        self.assertEqual(message["snippet"], "")
+        self.assertFalse(result["has_more"])
+        self.assertIsNone(result["total_count"])
+
+    async def test_preview_errors_and_malformed_responses_are_not_empty_inboxes(self):
+        for raw in [{"successful": False, "error": "413 too large"}, {"data": {}}, {"data": {"messages": [{}]}}]:
+            with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "execute_gmail_tool", return_value=raw):
+                result = await search.task_email_search("is:unread")
+            self.assertIn("error", result)
+            self.assertNotIn("messages", result)
+
+    async def test_empty_preview_is_successful_and_invalid_modes_do_not_fetch(self):
+        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "execute_gmail_tool", return_value={"data": {"messages": []}}) as fetch:
+            result = await search.task_email_search("in:inbox is:unread")
+            self.assertEqual(result["messages"], [])
+            self.assertEqual(result["returned_count"], 0)
+            self.assertFalse(result["has_more"])
+            fetch.reset_mock()
+            self.assertIn("error", await search.task_email_search("is:unread", mode="unknown"))
+            fetch.assert_not_called()
+
+    async def test_explicit_all_mode_keeps_pagination_and_full_content_for_unread_counts(self):
+        first, second = self.email("first"), self.email("second")
+        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "execute_gmail_tool", return_value={"data": {}}) as fetch, patch.object(search, "parse_gmail_fetch_response", side_effect=[([first], "next-page"), ([second], None)]), patch.object(search, "_processed_to_schema", side_effect=lambda email: email), patch.object(search._LOG_STORE, "record_action"):
+            result = await search.task_email_search("is:unread", mode="all")
+        self.assertEqual([email["id"] for email in result], ["first", "second"])
+        self.assertEqual(fetch.call_count, 2)
+        self.assertTrue(fetch.call_args.kwargs["arguments"]["include_payload"])
+        self.assertEqual(fetch.call_args.kwargs["arguments"]["page_token"], "next-page")
+
     async def test_gmail_query_skips_nested_models_and_follows_pages_with_deduplication(self):
         first, second = self.email("first"), self.email("second")
         fetch = Mock(return_value={"data": {}})
-        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(
-            search, "request_chat_completion", AsyncMock()
-        ) as model, patch.object(search, "execute_gmail_tool", fetch), patch.object(
-            search, "parse_gmail_fetch_response", side_effect=[([first], "next-page"), ([first, second], None)]
-        ), patch.object(
-            search, "_processed_to_schema", side_effect=lambda email: email
-        ), patch.object(
-            search._LOG_STORE, "record_action"
-        ):
+        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "request_chat_completion", AsyncMock()) as model, patch.object(search, "execute_gmail_tool", fetch), patch.object(search, "parse_gmail_fetch_response", side_effect=[([first], "next-page"), ([first, second], None)]), patch.object(search, "_processed_to_schema", side_effect=lambda email: email), patch.object(search._LOG_STORE, "record_action"):
             result = await search.task_email_search("Chipotle after:2026/01/01 before:2027/01/01")
         self.assertEqual([email["id"] for email in result], ["first", "second"])
         model.assert_not_awaited()
@@ -95,24 +154,14 @@ class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetch.call_args_list[0].kwargs["arguments"]["max_results"], 100)
 
     async def test_later_page_failure_does_not_present_a_partial_count(self):
-        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(
-            search, "execute_gmail_tool", side_effect=[{"data": {}}, {"successful": False, "error": "Second page failed"}]
-        ), patch.object(search, "parse_gmail_fetch_response", return_value=([self.email("first")], "next-page")), patch.object(
-            search, "_processed_to_schema", side_effect=lambda email: email
-        ), patch.object(
-            search._LOG_STORE, "record_action"
-        ):
+        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "execute_gmail_tool", side_effect=[{"data": {}}, {"successful": False, "error": "Second page failed"}]), patch.object(search, "parse_gmail_fetch_response", return_value=([self.email("first")], "next-page")), patch.object(search, "_processed_to_schema", side_effect=lambda email: email), patch.object(search._LOG_STORE, "record_action"):
             result = await search.task_email_search("Chipotle after:2026/01/01")
         self.assertIn("Second page failed", result["error"])
         self.assertNotIn("emails", result)
 
     async def test_repeated_page_tokens_and_page_limit_are_explicit_failures(self):
         for tokens in (("repeat", "repeat"), ("first", "second")):
-            with patch.object(search, "MAX_SEARCH_PAGES", 2), patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(
-                search, "execute_gmail_tool", return_value={}
-            ), patch.object(search, "parse_gmail_fetch_response", side_effect=[([], token) for token in tokens]), patch.object(
-                search._LOG_STORE, "record_action"
-            ):
+            with patch.object(search, "MAX_SEARCH_PAGES", 2), patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "execute_gmail_tool", return_value={}), patch.object(search, "parse_gmail_fetch_response", side_effect=[([], token) for token in tokens]), patch.object(search._LOG_STORE, "record_action"):
                 result = await search.task_email_search("Chipotle after:2026/01/01")
             self.assertIn("error", result)
 
@@ -124,9 +173,7 @@ class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
             release.wait(timeout=1)
             return {"data": {"messages": []}}
 
-        with patch.object(search, "execute_gmail_tool", side_effect=fetch), patch.object(
-            search, "parse_gmail_fetch_response", return_value=([], None)
-        ), patch.object(search._LOG_STORE, "record_action"):
+        with patch.object(search, "execute_gmail_tool", side_effect=fetch), patch.object(search, "parse_gmail_fetch_response", return_value=([], None)), patch.object(search._LOG_STORE, "record_action"):
             task = asyncio.create_task(search._perform_search(arguments={"query": "Chipotle"}, queries=[], emails={}, composio_user_id="user"))
             try:
                 await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1)
@@ -137,9 +184,7 @@ class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_natural_language_search_accepts_a_keyless_local_provider(self):
         run = AsyncMock(return_value=[])
-        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(
-            search, "_validate_openrouter_config", return_value=(True, None, "local-model")
-        ), patch.object(search, "_run_email_search", run):
+        with patch.object(search, "_validate_gmail_connection", return_value="test-user"), patch.object(search, "_validate_openrouter_config", return_value=(True, None, "local-model")), patch.object(search, "_run_email_search", run):
             self.assertEqual(await search.task_email_search("Find my receipts from last week"), [])
         run.assert_awaited_once_with(search_query="Find my receipts from last week", composio_user_id="test-user", model="local-model", api_key=None)
 
@@ -170,9 +215,7 @@ class EmailSearchFailureTests(unittest.IsolatedAsyncioTestCase):
             completion([tool_call(search.SEARCH_TOOL_NAME, {"query": "newer_than:1d"})]),
             completion([tool_call(search.COMPLETE_TOOL_NAME, {"message_ids": []})]),
         ]
-        with patch.object(search, "request_chat_completion", AsyncMock(side_effect=responses)), patch.object(
-            search, "execute_gmail_tool", return_value={"successful": False, "error": "Service unavailable"}
-        ), patch.object(search._LOG_STORE, "record_action"):
+        with patch.object(search, "request_chat_completion", AsyncMock(side_effect=responses)), patch.object(search, "execute_gmail_tool", return_value={"successful": False, "error": "Service unavailable"}), patch.object(search._LOG_STORE, "record_action"):
             with self.assertRaisesRegex(RuntimeError, "Gmail API search failed: Service unavailable"):
                 await self.run_search()
 

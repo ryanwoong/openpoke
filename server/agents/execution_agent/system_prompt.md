@@ -60,4 +60,6 @@ When you receive instructions, think step-by-step about what needs to be done, t
 
 # Email search efficiency
 
+For quick inbox checks such as "any new emails?", call `task_email_search` with `mode="preview"` and a Gmail query such as `in:inbox is:unread`. Preview mode returns at most ten headers and snippets without full bodies or additional pages. Report the returned items as a preview, never as the total unread count. Do not invent a body summary when the snippet is empty. Only use `mode="all"` when the user needs an exhaustive count, a comprehensive search, or full message content; narrow the query to the relevant message/thread when reading a specific email.
+
 Use `task_email_search` with a Gmail query when the sender, keywords, or dates are known; this executes directly without a nested planning model. Start with one query covering the requested date range, then inspect the returned messages before deciding whether another query is needed. Avoid repeating overlapping searches when the existing messages answer the request. For order counts, distinguish receipts from promotions and duplicate confirmations; count unique orders supported by the messages, not the number of email matches. Do not claim an exact total if any search was incomplete or failed.

@@ -1,12 +1,13 @@
 import { chatActivityPositions, type ChatActivity } from "../../lib/chatActivity";
 import { ChatActivitySteps } from "./ChatActivitySteps";
 import clsx from "clsx";
-import React, { RefObject } from "react";
+import React, { RefObject, useRef, useState } from "react";
 import { LoadingIndicator } from "../ui/LoadingIndicator";
 import type { ChatBubble } from "./types";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { BrandMark } from "./BrandMark";
 import { messageTimestamp } from "../../lib/messageTimestamp";
+import { replyChoices } from "../../lib/replyChoices";
 
 interface ChatMessagesProps {
   messages: ReadonlyArray<ChatBubble>;
@@ -19,9 +20,25 @@ interface ChatMessagesProps {
   onScroll: () => void;
   onRetryRequest?: (requestId: string) => void;
   onSuggestion?: (text: string) => void;
+  onReplyChoice?: (text: "yes" | "no") => Promise<void>;
 }
 
-export function ChatMessages({ messages, timeZone, activities = [], activeRequestIds, isWaitingForResponse, isLoadingHistory = false, scrollContainerRef, onScroll, onSuggestion, onRetryRequest }: ChatMessagesProps) {
+export function ChatMessages({ messages, timeZone, activities = [], activeRequestIds, isWaitingForResponse, isLoadingHistory = false, scrollContainerRef, onScroll, onSuggestion, onRetryRequest, onReplyChoice }: ChatMessagesProps) {
+  const submittingChoice = useRef(false);
+  const [isSubmittingChoice, setIsSubmittingChoice] = useState(false);
+  const latestMessage = [...messages].reverse().find((message) => (message.role === "user" || message.role === "assistant") && message.source !== "scheduled");
+  const submitChoice = async (choice: "yes" | "no") => {
+    if (!onReplyChoice || submittingChoice.current || isWaitingForResponse || isLoadingHistory) return;
+    submittingChoice.current = true;
+    setIsSubmittingChoice(true);
+    try {
+      await onReplyChoice(choice);
+    } catch {
+    } finally {
+      submittingChoice.current = false;
+      setIsSubmittingChoice(false);
+    }
+  };
   const activityPositions = chatActivityPositions(messages, activities);
   const positionedActivities = [...activityPositions.values()].flat();
   const hasActivity = activeRequestIds ? activeRequestIds.length > 0 && activeRequestIds.every((id) => positionedActivities.some((activity) => activity.requestId === id)) : activityPositions.has(messages.length);
@@ -75,6 +92,8 @@ export function ChatMessages({ messages, timeZone, activities = [], activeReques
           const isUser = message.role === "user";
           const isScheduled = message.source === "scheduled";
           const isDraft = message.role === "draft";
+          const choices = message.role === "assistant" && !message.source && onReplyChoice ? replyChoices(message.text) : null;
+          const choicesDisabled = message !== latestMessage || isWaitingForResponse || isLoadingHistory || isSubmittingChoice;
           const precedingUser = messages
             .slice(0, index)
             .reverse()
@@ -107,7 +126,27 @@ export function ChatMessages({ messages, timeZone, activities = [], activeReques
                     tabIndex={sentTime ? 0 : undefined}
                     aria-describedby={sentTime ? timestampId : undefined}
                   >
-                    {message.role === "assistant" ? <MarkdownMessage text={message.text} /> : <span className="whitespace-pre-wrap">{message.text}</span>}
+                    {message.role === "assistant" ? <MarkdownMessage text={choices?.text ?? message.text} /> : <span className="whitespace-pre-wrap">{message.text}</span>}
+                    {choices && (
+                      <div className="message-reply-choices">
+                        <p>{message === latestMessage ? "Click Yes or No." : "Reply no longer available."}</p>
+                        <div
+                          role="group"
+                          aria-label="Yes or no response"
+                        >
+                          {(["yes", "no"] as const).map((choice) => (
+                            <button
+                              type="button"
+                              key={choice}
+                              disabled={choicesDisabled}
+                              onClick={() => void submitChoice(choice)}
+                            >
+                              {choice === "yes" ? "Yes" : "No"}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   {message.source === "failure" && message.retryable && message.requestId && onRetryRequest && (
                     <button

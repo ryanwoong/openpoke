@@ -265,6 +265,7 @@ export default function Page() {
           timeZone={settings.timezone || undefined}
           activities={activities}
           onRetryRequest={retryRequest}
+          onReplyChoice={sendMessage}
           activeRequestIds={Array.from(new Set([...pendingRequests, ...activities.filter((activity) => chatRequestStatus(executionSpans, activity.requestId)?.status === "running").map((activity) => activity.requestId)]))}
           isLoadingHistory={isLoadingHistory}
           isWaitingForResponse={isWaitingForResponse}

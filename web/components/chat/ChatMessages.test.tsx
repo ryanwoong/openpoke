@@ -5,8 +5,46 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { ChatMessages } from "./ChatMessages";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { replyChoices } from "../../lib/replyChoices";
 
 const renderMarkdown = (text: string) => renderToStaticMarkup(<MarkdownMessage text={text} />);
+
+const approvalText = "Email draft for tomorrow (awaiting approval):\nTo: hello@example.com\nSubject: Hey!\n\nHello!\n\nReply yes to approve this exact email and its schedule, or no to cancel. Repeats: daily.";
+
+test("approval choices preserve draft and recurrence details while replacing reply instructions", () => {
+  const html = renderToStaticMarkup(
+    <ChatMessages
+      messages={[{ id: "approval", role: "assistant", text: approvalText }]}
+      isWaitingForResponse={false}
+      scrollContainerRef={{ current: null }}
+      onScroll={() => {}}
+      onReplyChoice={async () => {}}
+    />,
+  );
+  for (const text of ["hello@example.com", "Subject: Hey!", "Hello!", "Repeats: daily.", "Click Yes or No.", ">Yes</button>", ">No</button>"]) assert.ok(html.includes(text), text);
+  assert.ok(!html.includes("Reply yes"));
+  assert.ok(!html.includes('disabled=""'));
+});
+
+test("older approval choices and choices during active requests cannot be submitted", () => {
+  for (const waiting of [false, true]) {
+    const html = renderToStaticMarkup(
+      <ChatMessages
+        messages={[{ id: "approval", role: "assistant", text: approvalText }, ...(!waiting ? [{ id: "answer", role: "user", text: "no" }] : [])]}
+        isWaitingForResponse={waiting}
+        scrollContainerRef={{ current: null }}
+        onScroll={() => {}}
+        onReplyChoice={async () => {}}
+      />,
+    );
+    assert.equal((html.match(/disabled=""/g) || []).length, 2);
+  }
+});
+
+test("ordinary questions, quoted instructions, and code examples stay intact", () => {
+  for (const text of ["Should I send this email?", "> Reply yes to approve, or no to cancel.", "```\nReply yes to approve, or no to cancel.\n```", "Reply yes to approve, or no to cancel.\n\nAnother question follows."]) assert.equal(replyChoices(text), null);
+  assert.equal(replyChoices("Continue?\n\nReply yes or no.")?.text, "Continue?");
+});
 
 test("renders common Markdown and GitHub-flavored formatting", () => {
   const html = renderMarkdown("# Heading\n\n**bold** and *italic* and ~~removed~~\n\n- first\n  - nested\n\n1. ordered\n\n> quote\n\n---\n\n- [x] done\n\n| Name | Value |\n| --- | --- |\n| one | two |");

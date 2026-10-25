@@ -16,13 +16,18 @@ _SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": TASK_TOOL_NAME,
-            "description": "Search Gmail. Pass a Gmail query directly when known to avoid another planning model. All result pages are fetched and duplicate message IDs removed; these are matching emails, not verified orders.",
+            "description": "Search Gmail. Use mode=preview with a Gmail query for quick inbox/new-email checks: at most 10 headers and snippets, no full bodies or total count. Auto mode previews simple unread/inbox/recent queries. Use mode=all for exact counts, exhaustive searches, or full message content; it fetches all pages and deduplicates IDs. Matching emails are not verified orders.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "search_query": {
                         "type": "string",
                         "description": "A Gmail query (preferred, e.g. Chipotle after:2026/01/01 before:2027/01/01) or a natural-language search request.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "preview", "all"],
+                        "description": "Default auto. Choose preview for inbox overviews; all for full content or complete counts. Preview queries must use Gmail search syntax, not natural-language instructions.",
                     },
                 },
                 "required": ["search_query"],

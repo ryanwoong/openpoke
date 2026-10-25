@@ -1,0 +1,10 @@
+# Yes/No reply buttons
+
+This is a frontend presentation feature. Stored messages and the chat API remain unchanged.
+
+- **Detection:** `web/lib/replyChoices.ts` matches a case-insensitive instruction starting at the message beginning or after a blank line: `Reply`, `Respond`, or `Answer`, optionally `with`, followed by `yes … or no …`. The instruction must fit on one line, and nothing after its terminating punctuation may contain a newline. Messages containing triple-backtick or triple-tilde fences are excluded. Ordinary questions such as “Should I send this?” do not produce buttons.
+- **Rendering:** `web/components/chat/ChatMessages.tsx` applies detection to assistant messages without a `source`, when a reply callback is available. It removes the matched instruction from the displayed Markdown, preserves surrounding content (including a same-line recurrence suffix), and adds “Click Yes or No.” with two buttons. The original message text remains intact in history.
+- **Submission:** `web/app/page.tsx` passes `sendMessage` as `onReplyChoice`. Clicking submits literal `yes` or `no` through the normal `POST /api/chat` flow, including an optimistic user bubble and standard error handling. For scheduled email drafts, `server/services/scheduling.py::resolve_email_approval` handles the answer using its existing draft-matching and approval checks.
+- **Availability:** Only the latest user/assistant message, excluding scheduled updates, can have enabled buttons. Buttons are disabled during history loading, active requests, and submission. A ref blocks duplicate clicks before React rerenders. Older prompts show disabled buttons and “Reply no longer available.” Failed submissions release the submission lock; the normal send flow reports the error.
+
+This uses text matching rather than structured action metadata. It does not infer arbitrary yes/no questions, identify a draft in the button payload, or change server approval rules. Tests in `web/components/chat/ChatMessages.test.tsx` cover content preservation, disabled states, and excluded text.

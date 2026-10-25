@@ -798,3 +798,37 @@
 .message-retry {
   display: block;
 }
+
+.message-reply-choices {
+  margin-top: 14px;
+}
+.message-reply-choices p {
+  margin-bottom: 8px;
+  color: var(--chat-muted);
+  font-size: 13px;
+}
+.message-reply-choices [role="group"] {
+  display: flex;
+  gap: 8px;
+}
+.message-reply-choices button {
+  min-width: 68px;
+  min-height: 40px;
+  padding: 6px 16px;
+  border: 1px solid var(--chat-line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--chat-ink);
+}
+.message-reply-choices button:first-child {
+  border-color: #244d3d;
+  background: #244d3d;
+  color: #fff;
+}
+.message-reply-choices button:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+.message-reply-choices button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

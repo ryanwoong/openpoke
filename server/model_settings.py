@@ -78,6 +78,17 @@ class SavedModelStore:
             self._save()
             return dict(entry)
 
+    def update(self, model_id: str, entry: dict[str, Any]) -> None:
+        with self._lock:
+            index = next((index for index, model in enumerate(self._models) if model["id"] == model_id), None)
+            if index is None:
+                raise KeyError(model_id)
+            identity = (entry["kind"], entry["model"], entry.get("base_url", ""))
+            if any(model["id"] != model_id and (model["kind"], model["model"], model.get("base_url", "")) == identity for model in self._models):
+                raise ValueError("This model is already saved")
+            self._models[index] = {**entry, "id": model_id}
+            self._save()
+
     def activate(self, model_id: str) -> None:
         with self._lock:
             if not any(model["id"] == model_id for model in self._models):

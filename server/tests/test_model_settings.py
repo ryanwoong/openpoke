@@ -113,6 +113,39 @@ class ModelSettingsTests(unittest.IsolatedAsyncioTestCase):
         reloaded = model_settings.SavedModelStore(self.path)
         self.assertEqual(reloaded.active()["model"], "test/model")
 
+    async def test_edit_preserves_identity_and_active_selection_and_persists(self):
+        inactive = self.store.add(model_settings.new_model_entry(kind="openrouter", model="test/other"), activate=False)
+        with patch("server.routes.model_settings.get_model_catalog", AsyncMock(return_value=[catalog_model("test/updated", context_length=65536)])):
+            response = await self.client.put("/settings/models/default", json={"kind": "openrouter", "model": "test/updated", "name": "Updated", "activate": False})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["active"], "default")
+            response = await self.client.put(f"/settings/models/{inactive['id']}", json={"kind": "openrouter", "model": "test/updated"})
+            self.assertEqual(response.status_code, 409)
+        reloaded = model_settings.SavedModelStore(self.path)
+        self.assertEqual(reloaded.active()["id"], "default")
+        self.assertEqual(reloaded.active()["name"], "Updated")
+        self.assertEqual(reloaded.active()["context_length"], 65536)
+        self.assertEqual(len(reloaded.snapshot()[1]), 2)
+        response = await self.client.put("/settings/models/missing", json={"kind": "openrouter", "model": "test/updated"})
+        self.assertEqual(response.status_code, 404)
+
+    async def test_edit_endpoint_reuses_or_replaces_key_without_exposing_it(self):
+        self.store.add(model_settings.new_model_entry(kind="openai_compatible", model="another", base_url="https://api.example.com/v1", api_key="other-secret"), activate=False)
+        endpoint = self.store.add(model_settings.new_model_entry(kind="openai_compatible", model="model-a", base_url="https://api.example.com/v1", api_key="secret"), activate=False)
+        discovery = AsyncMock(return_value=("https://api.example.com/v1", endpoint_models("model-b")))
+        payload = {"kind": "openai_compatible", "base_url": "https://api.example.com/v1", "model": "model-b", "name": "Updated endpoint"}
+        with patch("server.routes.model_settings.discover_endpoint_models", discovery):
+            response = await self.client.put(f"/settings/models/{endpoint['id']}", json=payload)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(discovery.await_args.args, (payload["base_url"], "secret"))
+            self.assertNotIn("secret", response.text)
+            self.assertEqual(response.json()["active"], "default")
+            response = await self.client.put(f"/settings/models/{endpoint['id']}", json={**payload, "api_key": "replacement"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(discovery.await_args.args, (payload["base_url"], "replacement"))
+            self.assertNotIn("replacement", response.text)
+        self.assertEqual(model_settings.SavedModelStore(self.path).snapshot()[1][-1]["api_key"], "replacement")
+
     async def test_openrouter_catalog_failure_returns_actionable_error(self):
         with patch("server.routes.model_settings.get_model_catalog", AsyncMock(side_effect=httpx.ConnectError("offline"))):
             response = await self.client.get("/settings/models/openrouter")

@@ -92,8 +92,7 @@ async def discover_models(payload: EndpointDiscovery):
     return {"base_url": base_url, "models": models}
 
 
-@router.post("")
-async def add_model(payload: NewModel):
+async def _model_entry(payload: NewModel):
     if payload.kind == "openai_compatible":
         if not payload.base_url:
             raise HTTPException(status_code=422, detail="Enter the server URL")
@@ -116,6 +115,12 @@ async def add_model(payload: NewModel):
         if not match:
             raise HTTPException(status_code=400, detail="Choose an available OpenRouter model with tool calling support")
         entry = new_model_entry(kind="openrouter", model=payload.model, name=payload.name.strip() or match["name"], context_length=match.get("context_length"))
+    return entry
+
+
+@router.post("")
+async def add_model(payload: NewModel):
+    entry = await _model_entry(payload)
     try:
         saved_models.add(entry, activate=payload.activate)
     except ValueError as exc:
@@ -129,6 +134,25 @@ async def set_active_model(payload: ActiveModel):
         saved_models.activate(payload.id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="That saved model no longer exists") from exc
+    return _listing()
+
+
+@router.put("/{model_id}")
+async def edit_model(model_id: str, payload: NewModel):
+    existing = next((model for model in saved_models.snapshot()[1] if model["id"] == model_id), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="That saved model no longer exists")
+    if payload.kind == existing["kind"] == "openai_compatible" and payload.api_key is None:
+        base_url = (payload.base_url or "").strip().rstrip("/")
+        if existing["base_url"] in {base_url, f"{base_url}/v1"}:
+            payload = payload.model_copy(update={"api_key": existing.get("api_key", "")})
+    entry = await _model_entry(payload)
+    try:
+        saved_models.update(model_id, entry)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="That saved model no longer exists") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _listing()
 
 

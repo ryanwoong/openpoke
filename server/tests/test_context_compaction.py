@@ -54,9 +54,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_execution_history_compacts_without_changing_system_rules_or_current_task(self):
         history = "<agent_response>" + "Old observation. " * 2500 + "</agent_response>\n<agent_request>Latest exact request</agent_request>"
         rules = "Never send without approval."
-        payload = self.payload(
-            [{"role": "system", "content": rules + "\n\n# Execution History\n\n" + history}, {"role": "user", "content": "Check trigger 17; do not send it."}]
-        )
+        payload = self.payload([{"role": "system", "content": rules + "\n\n# Execution History\n\n" + history}, {"role": "user", "content": "Check trigger 17; do not send it."}])
         original = copy.deepcopy(payload)
         prepared, compacted = await self.compactor.prepare(payload, 5000, self.summary, "model")
         self.assertTrue(compacted)
@@ -72,13 +70,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_embedded_history_keeps_current_turn_and_recent_approval_verbatim(self):
         recent = "<poke_reply>Email draft 17 (awaiting approval): exact subject and body.</poke_reply>"
-        content = (
-            "<conversation_history><poke_reply>"
-            + "Old email. " * 2500
-            + "</poke_reply>"
-            + recent
-            + "</conversation_history><new_user_message>Is it approved?</new_user_message>"
-        )
+        content = "<conversation_history><poke_reply>" + "Old email. " * 2500 + "</poke_reply>" + recent + "</conversation_history><new_user_message>Is it approved?</new_user_message>"
         prepared, _ = await self.compactor.prepare(self.payload([{"role": "user", "content": content}]), 4000, self.summary, "model")
         text = prepared["messages"][0]["content"]
         self.assertIn(recent, text)
@@ -92,9 +84,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
             "content": "",
         }
         result = {"tool": "task_email_search", "status": "success", "arguments": {"search_query": "receipts"}, "result": emails}
-        payload = self.payload(
-            [{"role": "user", "content": "Count unique orders"}, call, {"role": "tool", "tool_call_id": "search", "content": json.dumps(result)}]
-        )
+        payload = self.payload([{"role": "user", "content": "Count unique orders"}, call, {"role": "tool", "tool_call_id": "search", "content": json.dumps(result)}])
         prepared, _ = await self.compactor.prepare(payload, 5000, self.summary, "model")
         self.assertEqual(prepared["messages"][1], call)
         self.assertEqual(prepared["messages"][2]["tool_call_id"], "search")
@@ -152,9 +142,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "user", "content": "Prepare this email"},
                 {
                     "role": "assistant",
-                    "tool_calls": [
-                        {"id": "draft", "function": {"name": "scheduleTask", "arguments": json.dumps({"kind": "email", "body": "Exact body " * 3000})}}
-                    ],
+                    "tool_calls": [{"id": "draft", "function": {"name": "scheduleTask", "arguments": json.dumps({"kind": "email", "body": "Exact body " * 3000})}}],
                 },
             ]
         )
@@ -200,22 +188,16 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
                 raise client.ContextWindowError("request exceeds context window", 4096)
             return {"choices": [{"message": {"content": "Done"}}]}
 
-        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
-            client, "_post_completion", side_effect=send
-        ):
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client, "_post_completion", side_effect=send):
             response = await client.request_chat_completion(model="test", messages=[{"role": "user", "content": "Current question"}])
         self.assertEqual(len(payloads), 2)
         self.assertLess(payloads[1]["max_tokens"], payloads[0]["max_tokens"])
         self.assertEqual(response["choices"][0]["message"]["content"], "Done")
-        self.assertEqual(client._context_limits[("http://test/v1", "test")].window, 4096)
+        self.assertEqual(client._context_limits[("http://test/v1", "test", 8192)].window, 4096)
 
     async def test_provider_overflow_compacts_history_before_retry(self):
         target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 8192)
-        source = (
-            "<conversation_history><poke_reply>"
-            + "Long older context. " * 500
-            + "</poke_reply></conversation_history><new_user_message>Check trigger 17</new_user_message>"
-        )
+        source = "<conversation_history><poke_reply>" + "Long older context. " * 500 + "</poke_reply></conversation_history><new_user_message>Check trigger 17</new_user_message>"
         regular, summaries = [], []
 
         async def send(payload, *args):
@@ -227,9 +209,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
                 raise client.ContextWindowError("context overflow", 4096)
             return {"choices": [{"message": {"content": "Final answer"}}]}
 
-        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
-            client, "_post_completion", side_effect=send
-        ):
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client, "_post_completion", side_effect=send):
             await client.request_chat_completion(model="test", messages=[{"role": "user", "content": source}])
         self.assertEqual(len(regular), 2)
         self.assertTrue(summaries)
@@ -238,11 +218,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_http_overflow_learns_a_budget_and_reuses_it_on_the_next_request(self):
         target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 8192)
-        source = (
-            "<conversation_history><poke_reply>"
-            + "Old reference. " * 700
-            + "</poke_reply></conversation_history><new_user_message>Check trigger 17</new_user_message>"
-        )
+        source = "<conversation_history><poke_reply>" + "Old reference. " * 700 + "</poke_reply></conversation_history><new_user_message>Check trigger 17</new_user_message>"
         regular, summaries = [], []
 
         def respond(request):
@@ -261,9 +237,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         def upstream():
             return real_client(transport=httpx.MockTransport(respond))
 
-        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
-            client.httpx, "AsyncClient", side_effect=upstream
-        ):
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client.httpx, "AsyncClient", side_effect=upstream):
             await client.request_chat_completion(model="test", messages=[{"role": "user", "content": source}])
             count = len(summaries)
             await client.request_chat_completion(model="test", messages=[{"role": "user", "content": source}])
@@ -271,25 +245,28 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(summaries)
         self.assertEqual(len(summaries), count)
         self.assertLess(estimate_tokens(regular[1]), estimate_tokens(regular[0]))
-        self.assertLessEqual(estimate_tokens(regular[2]), client._context_limits[("http://test/v1", "test")].input_tokens)
+        self.assertLessEqual(estimate_tokens(regular[2]), client._context_limits[("http://test/v1", "test", 8192)].input_tokens)
+
+    async def test_changing_configured_context_window_ignores_old_learned_limit(self):
+        target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 65536)
+        client._context_limits[("http://test/v1", "test", 8192)] = client.LearnedContextLimit(4096, 2000)
+        send = AsyncMock(return_value={"choices": [{"message": {"content": "Done"}}]})
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client, "_post_completion", send):
+            await client.request_chat_completion(model="test", messages=[{"role": "user", "content": "Source material. " * 1500}])
+        self.assertEqual(send.await_count, 1)
+        self.assertFalse(self.compactor.directory.exists())
 
     async def test_repeated_overflow_stops_after_one_retry(self):
         target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 8192)
         send = AsyncMock(side_effect=client.ContextWindowError("too long", None))
-        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
-            client, "_post_completion", send
-        ):
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client, "_post_completion", send):
             with self.assertRaisesRegex(ContextBudgetError, "still rejected"):
                 await client.request_chat_completion(model="test", messages=[{"role": "user", "content": "Hello"}])
         self.assertEqual(send.await_count, 2)
 
     async def test_shared_client_bounds_summary_requests_and_keeps_tool_schema(self):
         target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 8192)
-        source = (
-            "<conversation_history><poke_reply>"
-            + "Old memory " * 5000
-            + "</poke_reply></conversation_history><new_user_message>Current exact task</new_user_message>"
-        )
+        source = "<conversation_history><poke_reply>" + "Old memory " * 5000 + "</poke_reply></conversation_history><new_user_message>Current exact task</new_user_message>"
         tools = [{"type": "function", "function": {"name": "scheduleTask", "parameters": {"type": "object"}}}]
         sent = []
 
@@ -298,9 +275,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(estimate_tokens(payload) + payload["max_tokens"], 8192)
             return {"choices": [{"message": {"content": "Compact facts"}, "finish_reason": "stop"}]}
 
-        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
-            client, "_post_completion", side_effect=send
-        ):
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client, "_post_completion", side_effect=send):
             await client.request_chat_completion(model="test", system="System rules stay exact", messages=[{"role": "user", "content": source}], tools=tools)
         self.assertGreater(len(sent), 1)
         self.assertEqual(sent[-1]["tools"], tools)
@@ -323,18 +298,12 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
                 budgets = attempts.setdefault(key, [])
                 budgets.append(payload["max_tokens"])
                 if len(budgets) < 3:
-                    return {
-                        "choices": [
-                            {"message": {"content": "" if len(budgets) == 1 else "Incomplete notes", "reasoning": "Thinking"}, "finish_reason": "length"}
-                        ]
-                    }
+                    return {"choices": [{"message": {"content": "" if len(budgets) == 1 else "Incomplete notes", "reasoning": "Thinking"}, "finish_reason": "length"}]}
                 return {"choices": [{"message": {"content": "Complete factual notes"}, "finish_reason": "stop"}]}
             regular.append(copy.deepcopy(payload))
             return {"choices": [{"message": {"content": "Done"}}]}
 
-        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
-            client, "_post_completion", side_effect=send
-        ):
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client, "_post_completion", side_effect=send):
             await client.request_chat_completion(model="reasoning", messages=[{"role": "user", "content": source}], tools=tools)
         self.assertTrue(attempts)
         for budgets in attempts.values():
@@ -351,9 +320,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         target = model_settings.CompletionTarget("Local", "small", "http://test/v1", None, 2048)
         send = AsyncMock(return_value={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
         source = "<conversation_history>" + "Old memory " * 1000 + "</conversation_history><new_user_message>Exact task</new_user_message>"
-        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
-            client, "_post_completion", send
-        ):
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client, "_post_completion", send):
             with self.assertRaisesRegex(ContextBudgetError, "context summary"):
                 await client.request_chat_completion(model="small", messages=[{"role": "user", "content": source}])
         self.assertTrue(send.await_args_list)
@@ -371,9 +338,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 8192)
         send = AsyncMock(return_value={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
         source = "<conversation_history>" + "Old memory " * 3000 + "</conversation_history><new_user_message>Current task</new_user_message>"
-        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(
-            client, "_post_completion", send
-        ):
+        with patch.object(client, "completion_target", return_value=target), patch.object(client, "context_compactor", self.compactor), patch.object(client, "_post_completion", send):
             with self.assertRaisesRegex(ContextBudgetError, "context summary"):
                 await client.request_chat_completion(model="test", messages=[{"role": "user", "content": source}])
         self.assertTrue(all("tools" not in call.args[0] for call in send.await_args_list))
@@ -415,9 +380,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         from server.routes.chat import clear_history
 
         self.compactor.archive("Original data")
-        with patch("server.routes.chat.get_conversation_log", return_value=Mock()), patch("server.routes.chat.get_trigger_service", return_value=Mock()), patch(
-            "server.services.get_execution_agent_logs", return_value=Mock()
-        ), patch("server.services.get_agent_roster", return_value=Mock()), patch("server.openrouter_client.context.context_compactor", self.compactor):
+        with patch("server.routes.chat.get_conversation_log", return_value=Mock()), patch("server.routes.chat.get_trigger_service", return_value=Mock()), patch("server.services.get_execution_agent_logs", return_value=Mock()), patch("server.services.get_agent_roster", return_value=Mock()), patch("server.openrouter_client.context.context_compactor", self.compactor):
             self.assertTrue(clear_history().ok)
         self.assertEqual(list(self.compactor.directory.glob("*.json")), [])
 
@@ -429,9 +392,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send.await_count, 1)
 
     def test_overflow_parser_handles_local_error_and_ignores_other_bad_requests(self):
-        self.assertEqual(
-            context_overflow(400, "request exceeds the context window. prompt (149266 tokens) leaves no room for answer in context (131072)"), (True, 131072)
-        )
+        self.assertEqual(context_overflow(400, "request exceeds the context window. prompt (149266 tokens) leaves no room for answer in context (131072)"), (True, 131072))
         self.assertEqual(context_overflow(400, "maximum context length is 8192 tokens"), (True, 8192))
         self.assertEqual(context_overflow(401, "context exceeded"), (False, None))
         self.assertEqual(context_overflow(400, "Invalid tool_call_id"), (False, None))
@@ -450,13 +411,7 @@ class ContextCompactionTests(unittest.IsolatedAsyncioTestCase):
         entries = [LogEntry(tag="poke_reply", payload="Large prior message " * 2500, index=0), LogEntry(tag="user_message", payload="Latest question", index=1)]
         memory = Mock(load_summary_state=Mock(return_value=SummaryState.empty()))
         target = model_settings.CompletionTarget("Local", "test", "http://test/v1", None, 8192)
-        with patch.object(summarizer, "get_settings", return_value=settings), patch.object(summarizer, "completion_target", return_value=target), patch.object(
-            summarizer, "_resolve_conversation_log", return_value=Mock()
-        ), patch.object(summarizer, "_collect_entries", return_value=entries), patch.object(
-            summarizer, "get_working_memory_log", return_value=memory
-        ), patch.object(
-            summarizer, "_call_openrouter", AsyncMock(return_value="Compact memory")
-        ):
+        with patch.object(summarizer, "get_settings", return_value=settings), patch.object(summarizer, "completion_target", return_value=target), patch.object(summarizer, "_resolve_conversation_log", return_value=Mock()), patch.object(summarizer, "_collect_entries", return_value=entries), patch.object(summarizer, "get_working_memory_log", return_value=memory), patch.object(summarizer, "_call_openrouter", AsyncMock(return_value="Compact memory")):
             self.assertTrue(await summarizer.summarize_conversation())
         state = memory.write_summary_state.call_args.args[0]
         self.assertEqual(state.summary_text, "Compact memory")

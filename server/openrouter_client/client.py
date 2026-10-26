@@ -133,7 +133,7 @@ async def request_chat_completion(
 ) -> Dict[str, Any]:
     target = completion_target(model)
     settings = get_settings()
-    scope = (target.base_url or base_url, target.model)
+    scope = (target.base_url or base_url, target.model, target.context_length)
     learned = _context_limits.get(scope)
     window = learned.window if learned else target.context_length or settings.context_window_tokens
     reserve = min(settings.context_output_tokens, window // 4)
@@ -155,8 +155,7 @@ async def request_chat_completion(
             "messages": [
                 {
                     "role": "system",
-                    "content": SUMMARY_SYSTEM
-                    + f" Keep the final notes under {max(64, output_tokens // 2)} words. Spend the available output on factual notes, not a reasoning narrative.",
+                    "content": SUMMARY_SYSTEM + f" Keep the final notes under {max(64, output_tokens // 2)} words. Spend the available output on factual notes, not a reasoning narrative.",
                 },
                 {"role": "user", "content": source},
             ],
@@ -194,9 +193,7 @@ async def request_chat_completion(
             return await _post_completion(prepared, target, api_key, base_url)
         except ContextWindowError as exc:
             if attempt:
-                raise ContextBudgetError(
-                    "The model still rejected the request after context compaction. Narrow the request or select a larger context window."
-                ) from exc
+                raise ContextBudgetError("The model still rejected the request after context compaction. Narrow the request or select a larger context window.") from exc
             window = min(window, exc.limit) if exc.limit else max(1024, window // 2)
             reserve = min(reserve, window // 4)
             payload["max_tokens"] = reserve

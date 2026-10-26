@@ -16,7 +16,14 @@ type SavedModel = {
   name: string;
   base_url?: string;
   has_api_key?: boolean;
+  context_length?: number;
+  discovered_context_length?: number | null;
+  context_length_override?: number;
+  discovery_metadata?: Record<string, unknown>;
 };
+
+type DiscoveredModel = Model & { metadata?: Record<string, unknown> };
+type EndpointValues = { base_url: string; api_key?: string; model: string; name: string; context_length_override: number | null };
 
 type Listing = { active: string | null; models: SavedModel[]; openrouter_key_configured: boolean };
 
@@ -45,30 +52,35 @@ function host(baseUrl = "") {
   }
 }
 
-function EndpointFields({ endpoints, initial, disabled, onReady }: { endpoints: SavedModel[]; initial?: SavedModel; disabled: boolean; onReady: (fields: { base_url: string; api_key?: string; model: string; name: string } | null) => void }) {
+function EndpointFields({ endpoints, initial, disabled, onReady }: { endpoints: SavedModel[]; initial?: SavedModel; disabled: boolean; onReady: (fields: EndpointValues | null) => void }) {
   const [baseUrl, setBaseUrl] = useState(() => initial?.base_url ?? endpoints[endpoints.length - 1]?.base_url ?? "");
   const [apiKey, setApiKey] = useState("");
   const [name, setName] = useState(initial?.name ?? "");
-  const [models, setModels] = useState<string[]>(initial ? [initial.model] : []);
+  const [models, setModels] = useState<DiscoveredModel[]>(initial ? [{ id: initial.model, name: initial.model, context_length: initial.discovered_context_length ?? (initial.context_length_override ? null : initial.context_length) ?? null, pricing: {}, metadata: initial.discovery_metadata }] : []);
+  const [overrides, setOverrides] = useState<Record<string, string>>(initial?.context_length_override ? { [initial.model]: String(initial.context_length_override) } : {});
   const [model, setModel] = useState(initial?.model ?? "");
   const [discovering, setDiscovering] = useState(false);
   const [error, setError] = useState("");
   const id = useId();
   const savedKey = endpoints.some((endpoint) => endpoint.has_api_key && [endpoint.base_url, endpoint.base_url?.replace(/\/v1$/, "")].includes(baseUrl.trim().replace(/\/$/, "")));
   const busy = disabled || discovering;
+  const selected = models.find((option) => option.id === model);
+  const contextWindow = overrides[model] ?? "";
+  const contextOverride = contextWindow.trim() ? Number(contextWindow) : null;
+  const validContext = contextOverride === null || (Number.isSafeInteger(contextOverride) && contextOverride >= 1024);
 
   useEffect(() => {
-    onReady(model && baseUrl.trim() ? { base_url: baseUrl.trim(), ...(apiKey && { api_key: apiKey }), model, name } : null);
-  }, [apiKey, baseUrl, model, name, onReady]);
+    onReady(model && baseUrl.trim() && validContext ? { base_url: baseUrl.trim(), ...(apiKey && { api_key: apiKey }), model, name, context_length_override: contextOverride } : null);
+  }, [apiKey, baseUrl, model, name, contextOverride, validContext, onReady]);
 
   async function discover() {
     setDiscovering(true);
     setError("");
     try {
-      const data = await request<{ base_url: string; models: Model[] }>("/discover", { method: "POST", json: { base_url: baseUrl.trim(), ...(apiKey && { api_key: apiKey }) } });
+      const data = await request<{ base_url: string; models: DiscoveredModel[] }>("/discover", { method: "POST", json: { base_url: baseUrl.trim(), ...(apiKey && { api_key: apiKey }) } });
       const ids = data.models.map((option) => option.id);
       setBaseUrl(data.base_url);
-      setModels(ids);
+      setModels(data.models);
       setModel((current) => (ids.includes(current) ? current : ids.length === 1 ? ids[0] : ""));
     } catch (error) {
       setModels([]);
@@ -103,6 +115,7 @@ function EndpointFields({ endpoints, initial, disabled, onReady }: { endpoints: 
             setBaseUrl(event.target.value);
             setModels([]);
             setModel("");
+            setOverrides({});
           }}
         />
         <p>Any OpenAI-compatible API: a hosted provider, or a server you run like Ollama, LM Studio, or vLLM.</p>
@@ -123,6 +136,7 @@ function EndpointFields({ endpoints, initial, disabled, onReady }: { endpoints: 
             setApiKey(event.target.value);
             setModels([]);
             setModel("");
+            setOverrides({});
           }}
         />
       </div>
@@ -162,10 +176,10 @@ function EndpointFields({ endpoints, initial, disabled, onReady }: { endpoints: 
               )}
               {models.map((option) => (
                 <option
-                  key={option}
-                  value={option}
+                  key={option.id}
+                  value={option.id}
                 >
-                  {option}
+                  {option.name}
                 </option>
               ))}
             </select>
@@ -173,6 +187,47 @@ function EndpointFields({ endpoints, initial, disabled, onReady }: { endpoints: 
               {models.length} {models.length === 1 ? "model" : "models"} found.
             </p>
           </div>
+          {selected && (
+            <>
+              <div className={styles.field}>
+                <label htmlFor={`${id}-context`}>
+                  Context window (tokens) <span>Optional override</span>
+                </label>
+                <input
+                  id={`${id}-context`}
+                  className="input"
+                  type="number"
+                  min={1024}
+                  step={1}
+                  placeholder={selected.context_length ? String(selected.context_length) : "Use application default"}
+                  value={contextWindow}
+                  disabled={busy}
+                  aria-invalid={!validContext}
+                  aria-describedby={`${id}-context-help`}
+                  onChange={(event) => setOverrides((current) => ({ ...current, [model]: event.target.value }))}
+                />
+                <p id={`${id}-context-help`}>
+                  {selected.context_length ? `Discovered: ${selected.context_length.toLocaleString()} tokens.` : "The server did not report a recognized context-window size."} {contextOverride !== null ? "Your override will be used. Clear it to use automatic settings." : "Leave blank to use the discovered size, or the application default when unavailable."} Use the context size configured on your server.
+                </p>
+                {!validContext && (
+                  <p
+                    role="alert"
+                    className={styles.error}
+                  >
+                    Enter a whole number of at least 1,024 tokens.
+                  </p>
+                )}
+              </div>
+              {selected.metadata ? (
+                <details className={styles.details}>
+                  <summary>Discovery data for {selected.id}</summary>
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md bg-gray-50 p-3 text-xs">{JSON.stringify(selected.metadata, null, 2)}</pre>
+                </details>
+              ) : (
+                <p className="text-xs text-gray-500">Refresh models to see the server’s discovery data for this model.</p>
+              )}
+            </>
+          )}
           <div className={styles.field}>
             <label htmlFor={`${id}-name`}>
               Display name <span>Optional</span>
@@ -199,7 +254,7 @@ function ModelForm({ initial, catalog, catalogError, onRetryCatalog, endpoints, 
   const [source, setSource] = useState<Source>(initial?.kind ?? "openrouter");
   const [openRouterModel, setOpenRouterModel] = useState(initial?.model ?? "");
   const [name, setName] = useState(initial?.name ?? "");
-  const [endpoint, setEndpoint] = useState<{ base_url: string; api_key?: string; model: string; name: string } | null>(null);
+  const [endpoint, setEndpoint] = useState<EndpointValues | null>(null);
   const [activate, setActivate] = useState(true);
   const [error, setError] = useState("");
   const ready = source === "openrouter" ? Boolean(openRouterModel) : Boolean(endpoint);

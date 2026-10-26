@@ -159,12 +159,14 @@ async def discover_endpoint_models(base_url: str, api_key: str = "") -> tuple[st
             if not ids:
                 raise ValueError("Server returned no models")
             lengths = {}
+            metadata = {}
             for item in data:
                 if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    metadata[item["id"]] = item
                     length = item.get("context_length") or item.get("max_model_len")
                     if isinstance(length, int) and not isinstance(length, bool) and length >= 1024:
                         lengths[item["id"]] = length
-            return candidate, [{"id": model_id, "name": model_id, "context_length": lengths.get(model_id), "pricing": {}} for model_id in ids]
+            return candidate, [{"id": model_id, "name": model_id, "context_length": lengths.get(model_id), "pricing": {}, "metadata": metadata[model_id]} for model_id in ids]
     raise ValueError("Server did not return an OpenAI-compatible model list")
 
 

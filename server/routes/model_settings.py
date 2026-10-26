@@ -21,6 +21,7 @@ class NewModel(BaseModel):
     # None reuses a key already saved for the same endpoint.
     api_key: Optional[str] = Field(default=None, max_length=4096)
     activate: bool = True
+    context_length_override: Optional[int] = Field(default=None, ge=1024, strict=True)
 
 
 class EndpointDiscovery(BaseModel):
@@ -107,8 +108,13 @@ async def _model_entry(payload: NewModel):
             name=payload.name.strip(),
             base_url=base_url,
             api_key=api_key,
-            context_length=match.get("context_length"),
+            context_length=payload.context_length_override or match.get("context_length"),
         )
+        entry["discovered_context_length"] = match.get("context_length")
+        if payload.context_length_override is not None:
+            entry["context_length_override"] = payload.context_length_override
+        if "metadata" in match:
+            entry["discovery_metadata"] = match["metadata"]
     else:
         catalog = await _catalog()
         match = next((model for model in catalog if model["id"] == payload.model), None)

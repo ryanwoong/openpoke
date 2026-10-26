@@ -1,11 +1,16 @@
-"""Bounded, process-local execution spans shared by asynchronous agent tasks."""
+"""Durable execution spans shared by asynchronous agent tasks."""
 
 import asyncio
+import atexit
 import inspect
+import json
+import os
+import sqlite3
 import threading
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import wraps
+from pathlib import Path
 from uuid import uuid4
 
 _current_span = ContextVar("execution_span", default=None)
@@ -24,14 +29,7 @@ def sanitize(value, depth=0):
     if depth > 5:
         return "[depth limit]"
     if isinstance(value, dict):
-        return {
-            str(key): (
-                "[redacted]"
-                if str(key).lower() == "token" or str(key).lower().endswith("_token") or any(secret in str(key).lower() for secret in _SECRET_KEYS)
-                else sanitize(item, depth + 1)
-            )
-            for key, item in list(value.items())[:50]
-        }
+        return {str(key): ("[redacted]" if str(key).lower() == "token" or str(key).lower().endswith("_token") or any(secret in str(key).lower() for secret in _SECRET_KEYS) else sanitize(item, depth + 1)) for key, item in list(value.items())[:50]}
     if isinstance(value, (list, tuple)):
         return [sanitize(item, depth + 1) for item in value[:50]]
     if value is None or isinstance(value, (bool, int, float)):
@@ -40,15 +38,38 @@ def sanitize(value, depth=0):
 
 
 class TraceStore:
-    def __init__(self, limit=1000):
+    def __init__(self, limit=1000, path=None):
         self.limit = limit
-        self._spans = {}
         self._lock = threading.Lock()
+        if path is not None:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(mode=0o600, exist_ok=True)
+            path.chmod(0o600)
+        self._connection = sqlite3.connect(str(path) if path is not None else ":memory:", check_same_thread=False)
+        self._connection.row_factory = sqlite3.Row
+        with self._connection:
+            self._connection.execute("""
+                CREATE TABLE IF NOT EXISTS execution_spans (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id TEXT NOT NULL UNIQUE,
+                    run_id TEXT NOT NULL,
+                    parent_id TEXT,
+                    kind TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    input TEXT NOT NULL,
+                    output TEXT NOT NULL
+                )
+            """)
+            self._connection.execute("CREATE INDEX IF NOT EXISTS execution_spans_run ON execution_spans (run_id, status)")
 
     def start(self, kind, label, detail, parent=None):
         identifier = uuid4().hex
-        with self._lock:
-            if parent and parent["id"] not in self._spans:
+        with self._lock, self._connection:
+            if parent and not self._connection.execute("SELECT 1 FROM execution_spans WHERE id = ?", (parent["id"],)).fetchone():
                 parent = None
             span = {
                 "id": identifier,
@@ -62,30 +83,53 @@ class TraceStore:
                 "input": sanitize(detail),
                 "output": None,
             }
-            self._spans[identifier] = span
+            self._connection.execute(
+                "INSERT INTO execution_spans (id, run_id, parent_id, kind, label, status, started_at, ended_at, input, output) VALUES (:id, :run_id, :parent_id, :kind, :label, :status, :started_at, :ended_at, :input, :output)",
+                {**span, "input": json.dumps(span["input"]), "output": "null"},
+            )
             # Evict whole inactive runs so retained graphs never lose their parents.
-            while len(self._spans) > self.limit:
-                active = {item["run_id"] for item in self._spans.values() if item["status"] == "running"}
-                candidate = next((item["run_id"] for item in self._spans.values() if item["run_id"] not in active), None)
+            while self._connection.execute("SELECT COUNT(*) FROM execution_spans").fetchone()[0] > self.limit:
+                candidate = self._connection.execute("""
+                    SELECT run_id FROM execution_spans
+                    GROUP BY run_id HAVING SUM(status = 'running') = 0
+                    ORDER BY MIN(started_at), MIN(sequence) LIMIT 1
+                """).fetchone()
                 if candidate is None:
                     break
-                self._spans = {key: item for key, item in self._spans.items() if item["run_id"] != candidate}
+                self._connection.execute("DELETE FROM execution_spans WHERE run_id = ?", (candidate["run_id"],))
         return span
 
     def finish(self, span, status, output):
-        with self._lock:
+        with self._lock, self._connection:
             span.update(status=status, ended_at=datetime.now(timezone.utc).isoformat(), output=sanitize(output))
+            self._connection.execute(
+                "UPDATE execution_spans SET status = ?, ended_at = ?, output = ? WHERE id = ?",
+                (span["status"], span["ended_at"], json.dumps(span["output"]), span["id"]),
+            )
+
+    def recover_interrupted(self):
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE execution_spans SET status = 'cancelled', ended_at = ?, output = ? WHERE status = 'running'",
+                (datetime.now(timezone.utc).isoformat(), json.dumps({"error": "The backend restarted before this activity finished. Submit the task again to retry."})),
+            )
 
     def snapshot(self):
         with self._lock:
-            return [dict(span) for span in self._spans.values()]
+            rows = self._connection.execute("SELECT id, run_id, parent_id, kind, label, status, started_at, ended_at, input, output FROM execution_spans ORDER BY started_at, sequence").fetchall()
+            return [{**dict(row), "input": json.loads(row["input"]), "output": json.loads(row["output"])} for row in rows]
 
     def clear(self):
+        with self._lock, self._connection:
+            self._connection.execute("DELETE FROM execution_spans")
+
+    def close(self):
         with self._lock:
-            self._spans.clear()
+            self._connection.close()
 
 
-trace_store = TraceStore()
+trace_store = TraceStore(path=os.environ.get("OPENPOKE_TRACE_DB", Path(__file__).resolve().parent / "data" / "execution_history.db"))
+atexit.register(trace_store.close)
 
 
 def current_run_id():

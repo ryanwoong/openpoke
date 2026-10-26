@@ -1,5 +1,7 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 
 from server.execution_trace import TraceStore, trace_store, traced
 
@@ -82,6 +84,7 @@ class ExecutionTraceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_retention_evicts_whole_completed_runs_and_clear_removes_data(self):
         store = TraceStore(limit=2)
+        self.addCleanup(store.close)
         root = store.start("interaction", "first", {})
         child = store.start("tool", "child", {}, root)
         store.finish(root, "completed", None)
@@ -93,11 +96,76 @@ class ExecutionTraceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_background_work_after_clear_starts_a_visible_run(self):
         store = TraceStore()
+        self.addCleanup(store.close)
         old = store.start("interaction", "cleared", {})
         store.clear()
         new = store.start("execution", "late background work", {}, old)
         self.assertIsNone(new["parent_id"])
         self.assertEqual(new["run_id"], new["id"])
+
+    def test_history_survives_reopen_with_details_and_relationships(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.db"
+            store = TraceStore(path=path)
+            root = store.start("interaction", "Find orders", {"prompt": "Find orders", "api_key": "private"})
+            child = store.start("tool", "Search inbox", {"query": "orders"}, root)
+            store.finish(child, "completed", {"count": 3})
+            store.finish(root, "completed", {"response": "Found three"})
+            expected = store.snapshot()
+            store.close()
+            reopened = TraceStore(path=path)
+            self.addCleanup(reopened.close)
+            self.assertEqual(reopened.snapshot(), expected)
+            self.assertEqual(reopened.snapshot()[1]["parent_id"], root["id"])
+            self.assertNotIn("private", path.read_bytes().decode("utf-8", errors="ignore"))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_restart_marks_only_unfinished_spans_as_cancelled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.db"
+            store = TraceStore(path=path)
+            root = store.start("interaction", "Find orders", {})
+            store.finish(root, "completed", {"response": "Working on it"})
+            store.start("execution", "Worker", {}, root)
+            store.close()
+            restarted = TraceStore(path=path)
+            self.addCleanup(restarted.close)
+            restarted.recover_interrupted()
+            completed, interrupted = restarted.snapshot()
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["output"], {"response": "Working on it"})
+            self.assertEqual(interrupted["status"], "cancelled")
+            self.assertIsNotNone(interrupted["ended_at"])
+            self.assertIn("backend restarted", interrupted["output"]["error"])
+            restarted.recover_interrupted()
+            self.assertEqual(restarted.snapshot()[1], interrupted)
+
+    def test_clear_and_late_completion_cannot_restore_deleted_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.db"
+            store = TraceStore(path=path)
+            span = store.start("execution", "Worker", {})
+            store.clear()
+            store.finish(span, "completed", {"done": True})
+            store.close()
+            reopened = TraceStore(path=path)
+            self.addCleanup(reopened.close)
+            self.assertEqual(reopened.snapshot(), [])
+
+    def test_persisted_retention_preserves_active_runs_and_complete_graphs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.db"
+            store = TraceStore(limit=3, path=path)
+            active = store.start("execution", "Long running", {})
+            root = store.start("interaction", "Finished", {})
+            child = store.start("tool", "Child", {}, root)
+            store.finish(child, "completed", {})
+            store.finish(root, "completed", {})
+            newest = store.start("interaction", "Newest", {})
+            store.close()
+            reopened = TraceStore(limit=3, path=path)
+            self.addCleanup(reopened.close)
+            self.assertEqual([span["id"] for span in reopened.snapshot()], [active["id"], newest["id"]])
 
     async def test_blocking_execution_tool_keeps_event_loop_responsive(self):
         import threading

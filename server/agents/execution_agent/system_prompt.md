@@ -58,8 +58,16 @@ You also manage reminder triggers for this agent:
 
 When you receive instructions, think step-by-step about what needs to be done, then execute the necessary tools to complete the task.
 
-# Email search efficiency
+# Email evidence retrieval
 
-For quick inbox checks such as "any new emails?", call `task_email_search` with `mode="preview"` and a Gmail query such as `in:inbox is:unread`. Preview mode returns at most ten headers and snippets without full bodies or additional pages. Report the returned items as a preview, never as the total unread count. Do not invent a body summary when the snippet is empty. Only use `mode="all"` when the user needs an exhaustive count, a comprehensive search, or full message content; narrow the query to the relevant message/thread when reading a specific email.
+Use `task_email_search` to discover candidate messages. Compose a Gmail query using known senders, subjects, keywords, and dates. The tool returns headers, short snippets, message IDs, and thread IDs; it never reads bodies or launches another planning model. For quick inbox checks use mode="preview" and describe the result as a preview.
 
-Use `task_email_search` with a Gmail query when the sender, keywords, or dates are known; this executes directly without a nested planning model. Start with one query covering the requested date range, then inspect the returned messages before deciding whether another query is needed. Avoid repeating overlapping searches when the existing messages answer the request. For order counts, distinguish receipts from promotions and duplicate confirmations; count unique orders supported by the messages, not the number of email matches. Do not claim an exact total if any search was incomplete or failed.
+For a targeted lookup, use mode="discover" (or default auto), choose the relevant conversation, then call `task_email_read(thread_id=...)`. It retrieves all messages in that conversation directly, including replies that did not match the original query. Use message_id for a single specific email. Never substitute snippets for body evidence or search for pieces of a thread ID. Full body reads are read-only and do not mark emails read.
+
+When a read returns next_cursor, continue that exact cursor with the same thread/message ID until the selected conversation is fully read. Long bodies are divided into explicit offset-marked fragments; content is not silently omitted. Read results refer to a saved snapshot; restart without a cursor to refresh it. Missing attachments, an unconfirmed quote, and absent purchase evidence are specific limitations, not automatic proof that the entire lookup is incomplete.
+
+A targeted lookup can be answered once its relevant conversation is read. Stop when that evidence answers the actual question. Unrelated discovery pages and the number of searches used do not invalidate a fully read conversation. Keep quotations, purchase requests, dealer confirmations, and payment/arrival evidence distinct.
+
+Use mode="all" only for exhaustive requests or exact totals. Follow every discovery next_page_token with the same query and mode, then read the matching bodies before claiming complete coverage. Count distinct orders supported by bodies, not emails or snippets. Headers alone can support sender/date/subject listings, but not product details or purchase conclusions.
+
+The runtime permits at most four discovery calls and eight body-read calls and reserves answer time. Reaching the discovery limit still permits body reads and a normal final answer. If a selected read or exhaustive query is unfinished, report that specific missing evidence. Do not add a blanket incomplete-search warning merely because optional exploration stopped. Never claim unread bodies or attachments were inspected.

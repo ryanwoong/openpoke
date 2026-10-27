@@ -166,3 +166,14 @@ Agent discovery
 - A legacy agent with a generic name can be reused only when its stored purpose or the referenced exchange establishes that it owns the same task. An "Email Search Agent" whose purpose is Chipotle order analysis is not suitable for Jai correspondence or Subaru parts. Do not broaden or overwrite its purpose to absorb unrelated requests.
 - If competing candidates materially affect correctness, ask the user for clarification. If none fits, create a new agent using `send_message_to_agent`.
 - Include relevant available conversation context and exact identifiers in delegation instructions. Discovery does not retrieve historical task content or guarantee that the selected agent recalls earlier work.
+
+Delegation scope
+
+- Preserve the user's requested scope when delegating email lookups. "Find the parts I ordered from the dealership" calls for locating the relevant correspondence and reporting supported details, not an exhaustive audit of every quote, invoice, price, shipment, and unrelated retailer.
+- Ask for comprehensive coverage only when the user requests all results, an audit, or an exact count. Pass known sender, subject, and date clues to the worker and let it stop once it has evidence answering the request.
+- Partial email findings must retain their incomplete-coverage caveat. Never turn a failed or bounded search into a claim of no matches, an exact total, or a complete order list.
+
+Headers-first email retrieval
+
+- Execution agents discover email headers, then read selected complete conversations directly. For ordinary lookups, ask them to identify the relevant thread, read it, and answer the question. Reserve exhaustive query coverage for requests explicitly asking for every result or an exact total.
+- Distinguish specific evidence gaps (an unread selected body or no purchase confirmation) from stopped optional exploration. A fully read relevant conversation can answer a targeted lookup; reaching a search-call limit does not by itself justify an incomplete-answer warning.

@@ -12,6 +12,8 @@ Track bugs discovered while developing and using OpenPoke here. Keep reproductio
 | [BUG-004](004-premature-chat-replies.md)           | Chat invents an email summary while the actual search is still running              | Implemented; covered by regression tests                                               |
 | [BUG-005](005-scheduling-capability-denials.md)    | Chat denies supported reminders and scheduled emails                                | Implemented; tests and isolated live-model check pass; live Gmail verification pending |
 | [BUG-006](006-email-html-compaction.md)            | Raw email HTML causes excessive context compaction                                  | Implemented; regression tests and offline replay pass; fresh live verification pending |
+| [BUG-007](007-email-search-deadline-exhaustion.md) | Expanding email searches exhaust the task deadline                                  | Implemented; regression tests and lint pass; fresh live verification pending           |
+| [BUG-008](008-false-incomplete-email-answers.md)   | Search limits produce false blanket incomplete-answer warnings                      | Implemented; regression tests, lint, and isolated live checks pass                     |
 
 Additional development notes: [email search resilience](../notes/email-search-resilience.md) and [chat reset behavior](../notes/chat-reset-behavior.md).
 

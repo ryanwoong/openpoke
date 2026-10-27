@@ -2,127 +2,48 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List
 
-from pydantic import BaseModel, ConfigDict, Field
 
 TASK_TOOL_NAME = "task_email_search"
-SEARCH_TOOL_NAME = "gmail_fetch_emails"
-COMPLETE_TOOL_NAME = "return_search_results"
+READ_TOOL_NAME = "task_email_read"
 
 _SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
             "name": TASK_TOOL_NAME,
-            "description": "Search Gmail. Use mode=preview with a Gmail query for quick inbox/new-email checks: at most 10 headers and snippets, no full bodies or total count. Auto mode previews simple unread/inbox/recent queries. Use mode=all for exact counts, exhaustive searches, or full message content; it fetches all pages and deduplicates IDs. Matching emails are not verified orders.",
+            "description": "Discover Gmail messages using headers and short snippets only. Compose a Gmail query yourself; this does not run another planning model or read bodies. Use returned thread_id/message id with task_email_read for actual contents. Follow next_page_token with the same query for more headers. mode=all requests exhaustive query/body coverage; default auto/discover is a targeted lookup. Preview is an inbox overview, not an exact count.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "search_query": {
-                        "type": "string",
-                        "description": "A Gmail query (preferred, e.g. Chipotle after:2026/01/01 before:2027/01/01) or a natural-language search request.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["auto", "preview", "all"],
-                        "description": "Default auto. Choose preview for inbox overviews; all for full content or complete counts. Preview queries must use Gmail search syntax, not natural-language instructions.",
-                    },
+                    "search_query": {"type": "string", "description": "Gmail search syntax, e.g. from:dealership.example subject:parts. Plain keywords are allowed; do not pass natural-language instructions."},
+                    "mode": {"type": "string", "enum": ["auto", "preview", "discover", "all"], "description": "Default auto: headers-first lookup. all requires following every page and reading matching messages before claiming complete coverage."},
+                    "page_token": {"type": "string", "description": "Exact next_page_token from the previous discovery page for the same query."},
                 },
                 "required": ["search_query"],
                 "additionalProperties": False,
             },
         },
-    }
-]
-
-
-class GmailSearchEmail(BaseModel):
-    """Clean email representation with enhanced content processing."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    # Core identifiers
-    id: str  # message_id from Gmail API
-    thread_id: Optional[str] = None
-    query: str  # The search query that found this email
-
-    # Email metadata
-    subject: str
-    sender: str
-    recipient: str  # to field
-    timestamp: datetime
-    label_ids: List[str] = Field(default_factory=list)
-
-    # Clean content (primary field for LLM consumption)
-    clean_text: str  # Processed, readable email content
-
-    # Attachment information
-    has_attachments: bool = False
-    attachment_count: int = 0
-    attachment_filenames: List[str] = Field(default_factory=list)
-
-
-class EmailSearchToolResult(BaseModel):
-    """Structured payload for each tool-call response."""
-
-    status: Literal["success", "error"]
-    query: Optional[str] = None
-    result_count: Optional[int] = None
-    next_page_token: Optional[str] = None
-    messages: List[GmailSearchEmail] = Field(default_factory=list)
-    error: Optional[str] = None
-
-
-class TaskEmailSearchPayload(BaseModel):
-    """Envelope for the final email selection."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    emails: List[GmailSearchEmail]
-
-
-_COMPLETION_SCHEMAS: List[Dict[str, Any]] = [
+    },
     {
         "type": "function",
         "function": {
-            "name": COMPLETE_TOOL_NAME,
-            "description": "Return the final list of relevant Gmail message ids that match the search criteria.",
+            "name": READ_TOOL_NAME,
+            "description": "Read the complete relevant Gmail conversation by thread_id, or one message by message_id. Provide exactly one ID returned by discovery. Returns cleaned body fragments with offsets. Continue the exact next_cursor with the same ID until exhausted; snippets cannot substitute for unread bodies. Attachments are listed but not opened.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "message_ids": {
-                        "type": "array",
-                        "description": "List of Gmail message ids deemed relevant.",
-                        "items": {"type": "string"},
-                    },
+                    "thread_id": {"type": "string", "maxLength": 128},
+                    "message_id": {"type": "string", "maxLength": 128},
+                    "cursor": {"type": "string", "maxLength": 1024},
                 },
-                "required": ["message_ids"],
                 "additionalProperties": False,
             },
         },
-    }
+    },
 ]
-
-
-def get_completion_schema() -> Dict[str, Any]:
-    return _COMPLETION_SCHEMAS[0]
 
 
 def get_schemas() -> List[Dict[str, Any]]:
-    """Return the JSON schema for the email search task."""
-
     return _SCHEMAS
-
-
-__all__ = [
-    "GmailSearchEmail",
-    "EmailSearchToolResult",
-    "TaskEmailSearchPayload",
-    "SEARCH_TOOL_NAME",
-    "COMPLETE_TOOL_NAME",
-    "TASK_TOOL_NAME",
-    "get_completion_schema",
-    "get_schemas",
-]

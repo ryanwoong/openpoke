@@ -7,11 +7,12 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ...execution_trace import traced
-from ...services.conversation.request_context import current_request
+from ...services.conversation.request_context import current_request, remaining_seconds
 from ...services.conversation.read_checkpoints import read_checkpoints
 from ...services.gmail import get_active_gmail_user_id
 
 from .agent import ExecutionAgent
+from .email_evidence import EmailEvidence, EMAIL_READ_TOOLS
 from .tools.scheduling import SCHEMA as SCHEDULING_SCHEMA
 from .tools import get_tool_schemas, get_tool_registry
 from ...config import get_settings
@@ -37,6 +38,10 @@ class ExecutionAgentRuntime:
     """Manages the execution of a single agent request."""
 
     MAX_TOOL_ITERATIONS = 8
+    MAX_EMAIL_SEARCHES = 4
+    MAX_EMAIL_READS = 8
+    EMAIL_ANSWER_RESERVE_SECONDS = 120
+    FINAL_ANSWER_TIMEOUT_SECONDS = 60
 
     # Initialize execution agent runtime with settings, tools, and agent instance
     def __init__(self, agent_name: str):
@@ -74,10 +79,28 @@ class ExecutionAgentRuntime:
             final_response: Optional[str] = None
             scheduling_attempted = scheduling
             scheduling_error = "The model did not provide a valid task and future time. Please specify both."
+            email_searches = 0
+            evidence = EmailEvidence()
+            email_reads = 0
+            self._exhausted_email_tools = set()
 
             for iteration in range(self.MAX_TOOL_ITERATIONS):
                 logger.info(f"[{self.agent.name}] Requesting plan (iteration {iteration + 1})")
-                response = await self._make_llm_call(system_prompt, messages, with_tools=True)
+                remaining = remaining_seconds()
+                if email_searches + email_reads and (iteration == self.MAX_TOOL_ITERATIONS - 1 or remaining is not None and remaining <= self.EMAIL_ANSWER_RESERVE_SECONDS):
+                    return await self._finish_email_search(system_prompt, messages, evidence, tools_executed)
+                try:
+                    if email_searches + email_reads:
+                        allowance = min(75, max(1, remaining - 60)) if remaining is not None else 75
+                        async with asyncio.timeout(allowance):
+                            response = await self._make_llm_call(system_prompt, messages, with_tools=True)
+                    else:
+                        response = await self._make_llm_call(system_prompt, messages, with_tools=True)
+                except Exception:
+                    if evidence.records or evidence.headers:
+                        logger.warning("[%s] Planning after email reads failed; returning verified excerpts", self.agent.name)
+                        return await self._finish_email_search(system_prompt, messages, evidence, tools_executed, use_model=False)
+                    raise
                 assistant_message = response.get("choices", [{}])[0].get("message", {})
 
                 if not assistant_message:
@@ -130,7 +153,22 @@ class ExecutionAgentRuntime:
                     scheduling_attempted = scheduling_attempted or tool_name in ("scheduleTask", "createTrigger", "updateTrigger")
                     logger.info(f"[{self.agent.name}] Executing tool: {tool_name}")
 
-                    success, result = await self._execute_tool(tool_name, tool_args)
+                    remaining = remaining_seconds()
+                    budget_blocked = tool_name in EMAIL_READ_TOOLS and (tool_name in self._exhausted_email_tools or remaining is not None and remaining <= self.EMAIL_ANSWER_RESERVE_SECONDS)
+                    if budget_blocked:
+                        success, result = False, {"error": "No additional retrieval was started. Use available evidence to answer; another permitted read may still be available."}
+                    else:
+                        if tool_name == "task_email_search":
+                            email_searches += 1
+                            if email_searches >= self.MAX_EMAIL_SEARCHES:
+                                self._exhausted_email_tools.add(tool_name)
+                        elif tool_name == "task_email_read":
+                            email_reads += 1
+                            if email_reads >= self.MAX_EMAIL_READS:
+                                self._exhausted_email_tools.add(tool_name)
+                        success, result = await self._execute_tool(tool_name, tool_args)
+                    if not budget_blocked or tool_name == "task_email_read" or tool_args.get("mode") == "all":
+                        evidence.observe(tool_name, tool_args, success, result)
 
                     if success:
                         tool_errors.pop(tool_name, None)
@@ -141,7 +179,8 @@ class ExecutionAgentRuntime:
                         logger.warning(f"[{self.agent.name}] Tool {tool_name} failed: {error_detail}")
                         record_payload = error_detail
                         scheduling_error = str(error_detail)
-                        tool_errors[tool_name] = str(error_detail)
+                        if not budget_blocked:
+                            tool_errors[tool_name] = str(error_detail)
                         if tool_name in ("scheduleTask", "createTrigger", "updateTrigger"):
                             schedule_errors.append(scheduling_error)
 
@@ -175,7 +214,9 @@ class ExecutionAgentRuntime:
             if final_response is None:
                 raise RuntimeError("LLM did not return a final response")
 
-            if tool_errors and not scheduling_attempted:
+            if evidence.gaps and not scheduling_attempted and not any(name not in EMAIL_READ_TOOLS for name in tool_errors):
+                return await self._finish_email_search(system_prompt, messages, evidence, tools_executed, answer=final_response)
+            if tool_errors and not scheduling_attempted and (not evidence.records or any(name not in EMAIL_READ_TOOLS for name in tool_errors)):
                 detail = "; ".join(f"{name}: {error}" for name, error in tool_errors.items())
                 final_response = f"The task could not be completed: {detail}"
                 self.agent.record_response(final_response)
@@ -198,10 +239,44 @@ class ExecutionAgentRuntime:
 
             return ExecutionResult(agent_name=self.agent.name, success=False, response=failure_text, error=error_msg)
 
+    async def _finish_email_search(self, system_prompt, messages, evidence, tools_executed, *, use_model=True, answer=None) -> ExecutionResult:
+        context = current_request.get()
+        if context and context.stopped_reason:
+            raise asyncio.CancelledError()
+        records = evidence.records
+        gaps = evidence.gaps
+        if not records and not evidence.headers:
+            return ExecutionResult(agent_name=self.agent.name, success=False, response="The requested email evidence could not be retrieved. Try a narrower sender or date range.", error="No email evidence was retrieved", tools_executed=tools_executed)
+        remaining = remaining_seconds()
+        allowance = min(self.FINAL_ANSWER_TIMEOUT_SECONDS, max(0, remaining - 30)) if remaining is not None else self.FINAL_ANSWER_TIMEOUT_SECONDS
+        if answer is None and use_model and allowance > 0:
+            try:
+                instruction = "Answer the user's actual question using the retrieved evidence. Search-call limits alone do not imply missing evidence. Complete selected conversations can answer a targeted lookup without auditing the whole mailbox. Keep quotes separate from confirmed orders; do not infer unread bodies or attachments."
+                instruction += " Actual unread evidence: " + json.dumps(gaps) if gaps else " Every selected body read is complete; do not add a blanket incomplete-search warning."
+                final_messages = messages + [{"role": "user", "content": instruction}]
+                async with asyncio.timeout(allowance):
+                    response = await self._make_llm_call(system_prompt, final_messages, with_tools=False)
+                choice = (response.get("choices") or [{}])[0]
+                message = choice.get("message") or {}
+                if not message.get("tool_calls") and choice.get("finish_reason") != "length":
+                    answer = message.get("content")
+            except Exception:
+                logger.warning("[%s] Final synthesis unavailable; returning retrieved evidence", self.agent.name)
+        if not isinstance(answer, str) or not answer.strip():
+            excerpts = []
+            for record in list((records or evidence.headers).values())[:12]:
+                text = str(record.get("clean_text") if records else record.get("snippet") or "No snippet supplied.")
+                excerpts.append(f"Subject: {record.get('subject', '(No subject)')}\nDate: {record.get('timestamp', 'Unknown')}\nExcerpt: {text[:600]}" + (" [excerpt shortened]" if len(text) > 600 else ""))
+            answer = ("Retrieved email excerpts" if records else "Header/snippet matches only; message bodies were not read") + " (up to 12 messages):\n\n" + "\n\n".join(excerpts)
+        prefix = ("Some selected evidence remains unread: " + "; ".join(gaps) + "\n\n") if gaps else ""
+        final = prefix + answer.strip()
+        self.agent.record_response(final)
+        return ExecutionResult(agent_name=self.agent.name, success=True, response=final, user_response=final, tools_executed=tools_executed)
+
     # Execute OpenRouter API call with system prompt, messages, and optional tool schemas
     async def _make_llm_call(self, system_prompt: str, messages: List[Dict], with_tools: bool) -> Dict:
         """Make an LLM call."""
-        tools_to_send = self.tool_schemas if with_tools else None
+        tools_to_send = [schema for schema in self.tool_schemas if schema["function"]["name"] not in getattr(self, "_exhausted_email_tools", set())] if with_tools else None
         logger.info("[%s] Calling LLM, tools: %d", self.agent.name, len(tools_to_send or []))
         return await request_chat_completion(model=self.model, messages=messages, system=system_prompt, api_key=self.api_key, tools=tools_to_send)
 
@@ -273,10 +348,10 @@ class ExecutionAgentRuntime:
         context = current_request.get()
         if context and context.stopped_reason:
             raise asyncio.CancelledError()
-        mailbox = get_active_gmail_user_id() if tool_name == "task_email_search" and context else None
-        if context and context.retry_of and tool_name != "task_email_search":
+        mailbox = get_active_gmail_user_id() if tool_name in EMAIL_READ_TOOLS and context else None
+        if context and context.retry_of and tool_name not in EMAIL_READ_TOOLS:
             return False, {"error": "Saved-result retries only permit email searches. Start a new request for actions that change data."}
-        if context and tool_name != "task_email_search":
+        if context and tool_name not in EMAIL_READ_TOOLS:
             context.read_only = False
             read_checkpoints.invalidate(context.request_id)
         if mailbox:
@@ -299,6 +374,8 @@ class ExecutionAgentRuntime:
             if isinstance(result, dict) and (result.get("error") or result.get("success") is False or result.get("successful") is False):
                 return False, {"error": result.get("error") or "Tool reported failure"}
             if mailbox:
+                if get_active_gmail_user_id() != mailbox:
+                    return False, {"error": "Gmail account changed during retrieval; restart the request"}
                 read_checkpoints.put(tool_name, arguments, mailbox, result)
             return True, result
         except Exception as e:

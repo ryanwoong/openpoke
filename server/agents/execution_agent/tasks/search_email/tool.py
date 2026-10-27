@@ -1,513 +1,296 @@
-"""Email search task implementation."""
+"""Headers-first Gmail discovery and selective, resumable body retrieval."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable, Dict
 
 from server.config import get_settings
 from server.logging_config import logger
-from server.model_settings import model_provider_configured
-from server.openrouter_client import request_chat_completion
-from server.services.execution import get_execution_agent_logs
-from server.services.gmail import (
-    EmailTextCleaner,
-    ProcessedEmail,
-    execute_gmail_tool,
-    get_active_gmail_user_id,
-    parse_gmail_fetch_response,
-)
-from .gmail_internal import GMAIL_FETCH_EMAILS_SCHEMA
-from .schemas import (
-    GmailSearchEmail,
-    EmailSearchToolResult,
-    TaskEmailSearchPayload,
-    COMPLETE_TOOL_NAME,
-    SEARCH_TOOL_NAME,
-    TASK_TOOL_NAME,
-    get_completion_schema,
-)
-from .system_prompt import get_system_prompt
+from server.model_settings import completion_target
+from server.openrouter_client.context import context_compactor, input_budget
+from server.services.conversation.request_context import current_request, remaining_seconds
+from server.services.gmail import EmailTextCleaner, execute_gmail_tool, get_active_gmail_user_id
+from .schemas import TASK_TOOL_NAME, READ_TOOL_NAME
 
-# Constants
-MAX_LLM_ITERATIONS = 8
-MAX_SEARCH_PAGES = 10
-ERROR_GMAIL_NOT_CONNECTED = "Gmail not connected. Please connect Gmail in settings first."
-ERROR_OPENROUTER_NOT_CONFIGURED = "No model provider configured. Set OPENROUTER_API_KEY or add an OpenAI-compatible model in Settings → Model."
-ERROR_EMPTY_QUERY = "search_query must not be empty"
-ERROR_QUERY_REQUIRED = "query parameter is required"
-ERROR_MESSAGE_IDS_REQUIRED = "message_ids parameter is required"
-ERROR_MESSAGE_IDS_MUST_BE_LIST = "message_ids must be provided as a list"
-ERROR_TOOL_ARGUMENTS_INVALID = "Tool arguments must be an object"
-ERROR_ITERATION_LIMIT = "Email search orchestrator exceeded iteration limit"
-
-
-_COMPLETION_TOOL_SCHEMA = get_completion_schema()
-_LOG_STORE = get_execution_agent_logs()
+SEARCH_TIMEOUT_SECONDS = 90
+ANSWER_RESERVE_SECONDS = 120
+MAX_THREAD_PAGES = 10
+MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024
 _EMAIL_CLEANER = EmailTextCleaner(max_url_length=40)
 
 
-# Create standardized error response for tool calls
-def _create_error_response(call_id: str, query: Optional[str], error: str) -> Tuple[str, str]:
-    """Create standardized error response for tool calls."""
-    result = EmailSearchToolResult(status="error", query=query, error=error)
-    return (call_id, _safe_json_dumps(result.model_dump(mode="json", exclude_none=True)))
-
-
-# Create standardized success response for tool calls
-def _create_success_response(call_id: str, data: Dict[str, Any]) -> Tuple[str, str]:
-    """Create standardized success response for tool calls."""
-    return (call_id, _safe_json_dumps(data))
-
-
-def _validate_search_query(search_query: str) -> Optional[str]:
-    """Validate search query and return error message if invalid."""
-    if not (search_query or "").strip():
-        return ERROR_EMPTY_QUERY
-    return None
-
-
-def _validate_gmail_connection() -> Optional[str]:
-    """Validate Gmail connection and return user ID or None."""
-    return get_active_gmail_user_id()
-
-
-def _validate_openrouter_config() -> Tuple[bool, Optional[str], str]:
-    """Validate model provider configuration and return (configured, api_key, model_or_error)."""
+def _email_input_budget() -> int:
     settings = get_settings()
-    if not model_provider_configured():
-        return False, None, ERROR_OPENROUTER_NOT_CONFIGURED
-    return True, settings.openrouter_api_key, settings.execution_agent_search_model
+    target = completion_target(settings.execution_agent_model)
+    window = target.context_length or settings.context_window_tokens
+    return input_budget(window, min(settings.context_output_tokens, window // 4))
 
 
-# Return task tool callables
-def build_registry(agent_name: str) -> Dict[str, Callable[..., Any]]:  # noqa: ARG001
-    """Return task tool callables."""
-
-    return {
-        TASK_TOOL_NAME: task_email_search,
-    }
+def _byte_limit() -> int:
+    return min(60000, max(4000, _email_input_budget() * 3 // 8))
 
 
-# Run an agentic Gmail search for the provided query
-async def task_email_search(search_query: str, mode: str = "auto") -> Any:
-    """Run an agentic Gmail search for the provided query."""
-    logger.info(f"[EMAIL_SEARCH] Starting search for: '{search_query}'")
+def _data(raw: Any) -> dict:
+    if not isinstance(raw, dict) or raw.get("successful") is False or raw.get("success") is False or raw.get("error"):
+        raise ValueError("Gmail returned an unsuccessful response")
+    data = raw.get("data", raw)
+    if not isinstance(data, dict):
+        raise ValueError("Gmail returned invalid response data")
+    return data
 
-    # Validate inputs
-    cleaned_query = (search_query or "").strip()
-    if error := _validate_search_query(cleaned_query):
-        logger.error(f"[EMAIL_SEARCH] Invalid query: {error}")
-        return {"error": error}
 
-    composio_user_id = _validate_gmail_connection()
-    if not composio_user_id:
-        logger.error(f"[EMAIL_SEARCH] Gmail not connected")
-        return {"error": ERROR_GMAIL_NOT_CONNECTED}
+def _identifier(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > 128:
+        raise ValueError("Expected a Gmail message/thread ID from a tool result")
+    return value
 
-    if mode not in ("auto", "preview", "all"):
-        return {"error": "mode must be auto, preview, or all"}
-    inbox_query = re.fullmatch(r"(?:(?:is:unread|in:inbox|newer_than:\d+[dmy])\s*)+", cleaned_query, re.IGNORECASE)
-    if mode == "preview" or (mode == "auto" and inbox_query):
-        return await _preview_inbox(cleaned_query, composio_user_id)
 
-    if re.search(r"(?:^|\s)(?:after|before|newer_than|older_than|from|to|subject|label|in|is|has):", cleaned_query, re.IGNORECASE):
-        emails = {}
-        result = await _perform_search(arguments={"query": cleaned_query, "max_results": 100}, queries=[], emails=emails, composio_user_id=composio_user_id)
-        if result.status == "error":
-            return {"error": result.error}
-        return [email.model_dump(mode="json", exclude_none=True) for email in result.messages]
-
-    configured, api_key, model_or_error = _validate_openrouter_config()
-    if not configured:
-        logger.error(f"[EMAIL_SEARCH] Model provider not configured: {model_or_error}")
-        return {"error": model_or_error}
-
+def _metadata(message: dict) -> dict:
+    if not isinstance(message, dict):
+        raise ValueError("Gmail returned an invalid message")
+    payload = message.get("payload")
+    headers = payload.get("headers", []) if isinstance(payload, dict) else []
+    headers = {h["name"].casefold(): h.get("value", "") for h in headers if isinstance(h, dict) and isinstance(h.get("name"), str)} if isinstance(headers, list) else {}
+    stamp = message.get("messageTimestamp") or headers.get("date") or ""
     try:
-        result = await _run_email_search(
-            search_query=cleaned_query,
-            composio_user_id=composio_user_id,
-            model=model_or_error,
-            api_key=api_key,
-        )
-        logger.info(f"[EMAIL_SEARCH] Found {len(result) if isinstance(result, list) else 0} emails")
-        return result
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.exception(f"[EMAIL_SEARCH] Search failed: {exc}")
-        return {"error": f"Email search failed: {exc}"}
-
-
-async def _preview_inbox(query: str, composio_user_id: str) -> Dict[str, Any]:
-    arguments = {
-        "query": query,
-        "max_results": 10,
-        "include_payload": False,
-        "verbose": True,
-        "include_spam_trash": False,
-        "format": "metadata",
-        "metadata_headers": ["From", "To", "Subject", "Date"],
-    }
-    try:
-        raw = await asyncio.to_thread(execute_gmail_tool, "GMAIL_FETCH_EMAILS", composio_user_id, arguments=arguments)
-        if raw.get("successful") is False or raw.get("success") is False or raw.get("error"):
-            raise RuntimeError(raw.get("error") or "Gmail reported an unsuccessful request")
-        data = raw.get("data", raw)
-        if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
-            raise RuntimeError("Gmail returned no valid message list")
-        messages = {}
-        for message in data["messages"][:10]:
-            if not isinstance(message, dict):
-                raise RuntimeError("Gmail returned an invalid message")
-            identifier = message.get("messageId") or message.get("id")
-            if not isinstance(identifier, str) or not identifier:
-                raise RuntimeError("Gmail returned a message without an ID")
-            headers = {header["name"].lower(): header.get("value", "") for header in (message.get("payload") or {}).get("headers", []) if isinstance(header, dict) and isinstance(header.get("name"), str)}
-            messages[identifier] = {
-                "id": identifier[:128],
-                "thread_id": str(message.get("threadId") or "")[:128],
-                "subject": str(message.get("subject") or headers.get("subject") or "(No subject)")[:300],
-                "sender": str(message.get("sender") or headers.get("from") or "Unknown sender")[:200],
-                "recipient": str(message.get("to") or headers.get("to") or "")[:200],
-                "timestamp": str(message.get("messageTimestamp") or headers.get("date") or "")[:100],
-                "snippet": str(message.get("snippet") or message.get("preview") or "")[:280],
-            }
-        return {
-            "mode": "preview",
-            "query": query,
-            "messages": list(messages.values()),
-            "returned_count": len(messages),
-            "has_more": bool(data.get("nextPageToken")) or len(data["messages"]) > 10,
-            "total_count": None,
-            "content_scope": "Headers and snippets only; bodies were not read. This preview is not a total unread count. Use mode=all for complete searches or full content.",
-        }
-    except Exception as exc:
-        logger.warning("[EMAIL_SEARCH] Inbox preview failed: %s", exc)
-        return {"error": f"Gmail inbox preview failed: {exc}"}
-
-
-# Execute the main email search orchestration loop
-async def _run_email_search(
-    *,
-    search_query: str,
-    composio_user_id: str,
-    model: str,
-    api_key: Optional[str],
-) -> List[Dict[str, Any]]:
-    """Execute the main email search orchestration loop."""
-    messages: List[Dict[str, Any]] = [{"role": "user", "content": _render_user_message(search_query)}]
-    queries: List[str] = []
-    emails: Dict[str, GmailSearchEmail] = {}
-    selected_ids: Optional[List[str]] = None
-    search_errors: List[str] = []
-
-    for iteration in range(MAX_LLM_ITERATIONS):
-        logger.debug(
-            "[task_email_search] LLM iteration",
-            extra={"iteration": iteration + 1, "tool": TASK_TOOL_NAME},
-        )
-
-        # Get LLM response
-        response = await request_chat_completion(
-            model=model,
-            messages=messages,
-            system=get_system_prompt(),
-            api_key=api_key,
-            tools=[GMAIL_FETCH_EMAILS_SCHEMA, _COMPLETION_TOOL_SCHEMA],
-        )
-
-        # Process assistant response
-        assistant = _extract_assistant_message(response)
-        tool_calls = assistant.get("tool_calls") or []
-
-        # Add assistant message to conversation
-        assistant_entry = {
-            "role": "assistant",
-            "content": assistant.get("content", "") or "",
-        }
-        if tool_calls:
-            assistant_entry["tool_calls"] = tool_calls
-        messages.append(assistant_entry)
-
-        # Handle case where LLM doesn't make tool calls
-        if not tool_calls:
-            if emails:
-                raise RuntimeError("The search model stopped without selecting the emails it found. Retry the search.")
-            logger.info(f"[EMAIL_SEARCH] LLM completed search - no more queries needed")
-            selected_ids = []
-            break
-
-        # Execute tool calls and process responses
-        tool_responses, completed_ids = await _execute_tool_calls(
-            tool_calls=tool_calls,
-            queries=queries,
-            emails=emails,
-            composio_user_id=composio_user_id,
-        )
-
-        # Add tool responses to conversation
-        for call_id, content in tool_responses:
-            tool_result = json.loads(content)
-            if tool_result.get("status") == "error":
-                search_errors.append(tool_result.get("error") or "Gmail search failed")
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": content,
-                }
-            )
-
-        # Check if search is complete
-        if completed_ids is not None:
-            logger.info(f"[EMAIL_SEARCH] Search completed - selected {len(completed_ids)} emails")
-            selected_ids = completed_ids
-            break
-    else:
-        logger.error(f"[EMAIL_SEARCH] {ERROR_ITERATION_LIMIT}")
-        raise RuntimeError(ERROR_ITERATION_LIMIT)
-
-    if not queries:
-        detail = search_errors[-1] if search_errors else "The model finished without running a Gmail search."
-        raise RuntimeError(f"No Gmail search completed successfully. {detail}")
-    if search_errors:
-        raise RuntimeError(f"Email search was incomplete; cannot confirm a complete result. {search_errors[-1]}")
-    final_result = _build_response(queries, emails, selected_ids or [])
-    unique_queries = list(dict.fromkeys(queries))
-    logger.info(f"[EMAIL_SEARCH] Completed - {len(unique_queries)} queries executed, {len(final_result)} emails selected")
-    return final_result
-
-
-# Create user message for the LLM with search context
-def _render_user_message(search_query: str) -> str:
-    """Create user message for the LLM with search context."""
-    return f"Please help me find emails: {search_query}"
-
-
-# Execute tool calls from LLM and process search/completion responses
-async def _execute_tool_calls(
-    *,
-    tool_calls: List[Dict[str, Any]],
-    queries: List[str],
-    emails: Dict[str, GmailSearchEmail],
-    composio_user_id: str,
-) -> Tuple[List[Tuple[str, str]], Optional[List[str]]]:
-    responses: List[Tuple[str, str]] = []
-    completion_ids: Optional[List[str]] = None
-
-    for call in tool_calls:
-        call_id = call.get("id") or SEARCH_TOOL_NAME
-        function = call.get("function") or {}
-        name = function.get("name") or ""
-        raw_arguments = function.get("arguments", {})
-        arguments, parse_error = _parse_arguments(raw_arguments)
-
-        if parse_error:
-            # Handle argument parsing errors
-            query = arguments.get("query") if arguments else None
-            logger.warning(f"[EMAIL_SEARCH] Tool argument parsing failed: {parse_error}")
-            responses.append(_create_error_response(call_id, query, parse_error))
-
-        elif name == COMPLETE_TOOL_NAME:
-            # Handle completion tool - signals end of search
-            completion_ids_candidate, response_data = _handle_completion_tool(arguments)
-            responses.append(_create_success_response(call_id, response_data))
-            if completion_ids_candidate is not None:
-                logger.info(f"[EMAIL_SEARCH] LLM selected {len(completion_ids_candidate)} emails")
-                completion_ids = completion_ids_candidate
-                break
-
-        elif name == SEARCH_TOOL_NAME:
-            # Handle Gmail search tool
-            search_query = arguments.get("query", "<unknown>")
-            logger.info(f"[SEARCH_QUERY] LLM generated query: '{search_query}'")
-
-            result_model = await _perform_search(
-                arguments=arguments,
-                queries=queries,
-                emails=emails,
-                composio_user_id=composio_user_id,
-            )
-            response_data = result_model.model_dump(mode="json", exclude_none=True)
-
-            if result_model.status == "success":
-                count = result_model.result_count or 0
-                logger.info(f"[SEARCH_RESULT] Query '{search_query}' → {count} emails found")
-            else:
-                logger.warning(f"[SEARCH_RESULT] Query '{search_query}' → FAILED: {result_model.error}")
-
-            responses.append(_create_success_response(call_id, response_data))
-
-        else:
-            # Handle unsupported tools
-            query = arguments.get("query")
-            error = f"Unsupported tool: {name}"
-            logger.warning(f"[EMAIL_SEARCH] Unsupported tool: {name}")
-            responses.append(_create_error_response(call_id, query, error))
-
-    return responses, completion_ids
-
-
-# Perform Gmail search using Composio and process results
-async def _perform_search(
-    *,
-    arguments: Dict[str, Any],
-    queries: List[str],
-    emails: Dict[str, GmailSearchEmail],
-    composio_user_id: str,
-) -> EmailSearchToolResult:
-    query = (arguments.get("query") or "").strip()
-    if not query:
-        logger.warning(f"[EMAIL_SEARCH] Search called with empty query")
-        return EmailSearchToolResult(
-            status="error",
-            error=ERROR_QUERY_REQUIRED,
-        )
-
-    # Use LLM-provided max_results or default to 10
-    max_results = arguments.get("max_results", 10)
-
-    composio_arguments = {
-        "query": query,
-        "max_results": max_results,  # Use LLM-provided value or default 10
-        "include_payload": True,  # REQUIRED: Need full email content for text cleaning
-        "verbose": True,  # REQUIRED: Need parsed content including messageText
-        "include_spam_trash": arguments.get("include_spam_trash", False),  # Default: False
-        "format": "full",  # Request full email format
-        "metadata_headers": ["From", "To", "Subject", "Date"],  # Ensure we get key headers
-    }
-
-    _LOG_STORE.record_action(
-        TASK_TOOL_NAME,
-        description=f"{TASK_TOOL_NAME} search | query={query} | max_results={max_results}",
-    )
-
-    collected = {}
-    page_token = None
-    seen_tokens = set()
-    try:
-        for _ in range(MAX_SEARCH_PAGES):
-            page_arguments = dict(composio_arguments)
-            if page_token:
-                page_arguments["page_token"] = page_token
-            raw_result = await asyncio.to_thread(execute_gmail_tool, "GMAIL_FETCH_EMAILS", composio_user_id, arguments=page_arguments)
-            if raw_result.get("successful") is False or raw_result.get("success") is False or raw_result.get("error"):
-                raise RuntimeError(f"Gmail API search failed: {raw_result.get('error') or 'Composio reported an unsuccessful request'}")
-            processed_emails, next_page_token = parse_gmail_fetch_response(raw_result, query=query, cleaner=_EMAIL_CLEANER)
-            for email in processed_emails:
-                parsed = _processed_to_schema(email)
-                collected[parsed.id] = parsed
-            if not next_page_token:
-                break
-            if next_page_token in seen_tokens:
-                raise RuntimeError("Gmail repeated a result page; the search is incomplete and no total can be confirmed")
-            seen_tokens.add(next_page_token)
-            page_token = next_page_token
-        else:
-            raise RuntimeError("The search exceeded its page limit; narrow the date range before requesting a total")
-    except Exception as exc:
-        logger.error(f"[EMAIL_SEARCH] Gmail API failed for '{query}': {exc}")
-        return EmailSearchToolResult(status="error", query=query, error=str(exc))
-
-    queries.append(query)
-    for identifier, email in collected.items():
-        emails.setdefault(identifier, email)
-    return EmailSearchToolResult(status="success", query=query, result_count=len(collected), messages=list(collected.values()))
-
-
-# Build final response with selected emails and logging
-def _build_response(
-    queries: List[str],
-    emails: Dict[str, GmailSearchEmail],
-    selected_ids: Sequence[str],
-) -> List[Dict[str, Any]]:
-    # Deduplicate queries while preserving order
-    unique_queries = list(dict.fromkeys(queries))
-
-    # Deduplicate and filter valid email IDs efficiently
-    valid_ids = [id.strip() for id in selected_ids if id and id.strip()]
-    unique_ids = list(dict.fromkeys(valid_ids))
-    selected_emails = [emails[id] for id in unique_ids if id in emails]
-
-    # Log any missing email IDs
-    missing_ids = [id for id in unique_ids if id not in emails]
-    if missing_ids:
-        logger.warning(f"[EMAIL_SEARCH] {len(missing_ids)} selected email IDs not found")
-
-    payload = TaskEmailSearchPayload(emails=selected_emails)
-
-    _LOG_STORE.record_action(
-        TASK_TOOL_NAME,
-        description=(f"{TASK_TOOL_NAME} completed | queries={len(unique_queries)} " f"| emails={len(selected_emails)}"),
-    )
-
-    return [email.model_dump(mode="json", exclude_none=True) for email in payload.emails]
-
-
-def _extract_assistant_message(response: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract assistant message from OpenRouter API response."""
-    return response.get("choices", [{}])[0].get("message", {})
-
-
-def _parse_arguments(raw_arguments: Any) -> Tuple[Dict[str, Any], Optional[str]]:
-    """Parse tool arguments with proper error handling."""
-    if isinstance(raw_arguments, dict):
-        return raw_arguments, None
-    if isinstance(raw_arguments, str):
-        if not raw_arguments.strip():
-            return {}, None
+        date = datetime.fromisoformat(stamp.replace("Z", "+00:00")) if isinstance(stamp, str) else None
+    except ValueError:
         try:
-            return json.loads(raw_arguments), None
-        except json.JSONDecodeError as exc:
-            return {}, f"Failed to parse tool arguments: {exc}"
-    return {}, ERROR_TOOL_ARGUMENTS_INVALID
+            date = parsedate_to_datetime(stamp)
+        except (ValueError, TypeError):
+            date = None
+    if not date and str(message.get("internalDate", "")).isdigit():
+        date = datetime.fromtimestamp(int(message["internalDate"]) / 1000, timezone.utc)
+    stamp = date.astimezone(timezone.utc).isoformat() if date and date.tzinfo else str(stamp)[:100]
+    preview = message.get("snippet") or message.get("preview") or ""
+    if isinstance(preview, dict):
+        preview = preview.get("body", "")
+    return {
+        "id": _identifier(message.get("messageId") or message.get("id")),
+        "thread_id": str(message.get("threadId") or message.get("thread_id") or "")[:128],
+        "subject": str(message.get("subject") or headers.get("subject") or "(No subject)")[:300],
+        "sender": str(message.get("sender") or headers.get("from") or "Unknown sender")[:200],
+        "recipient": str(message.get("to") or headers.get("to") or "")[:200],
+        "timestamp": stamp,
+        "snippet": str(preview)[:280],
+    }
 
 
-def _handle_completion_tool(arguments: Dict[str, Any]) -> Tuple[Optional[List[str]], Dict[str, Any]]:
-    """Handle completion tool call, parsing message IDs and returning response."""
-    raw_ids = arguments.get("message_ids")
-    if raw_ids is None:
-        return None, {"status": "error", "error": ERROR_MESSAGE_IDS_REQUIRED}
-    if not isinstance(raw_ids, list):
-        return None, {"status": "error", "error": ERROR_MESSAGE_IDS_MUST_BE_LIST}
-
-    # Filter out empty/invalid IDs efficiently
-    message_ids = [str(value).strip() for value in raw_ids if str(value).strip()]
-
-    return message_ids, {"status": "success", "message_ids": message_ids}
+async def _invoke(tool: str, mailbox: str, arguments: dict) -> dict:
+    raw = await asyncio.to_thread(execute_gmail_tool, tool, mailbox, arguments=arguments)
+    if get_active_gmail_user_id() != mailbox:
+        raise ValueError("Gmail account changed during retrieval; restart the read")
+    return _data(raw)
 
 
-def _safe_json_dumps(payload: Any) -> str:
-    """Safely serialize payload to JSON string."""
+async def _bounded(operation):
+    remaining = remaining_seconds()
+    allowance = min(SEARCH_TIMEOUT_SECONDS, max(0, remaining - ANSWER_RESERVE_SECONDS)) if remaining is not None else SEARCH_TIMEOUT_SECONDS
+    if allowance <= 0:
+        return {"error": "No read was started; time was reserved for the answer."}
     try:
-        return json.dumps(payload, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return json.dumps({"repr": repr(payload)})
+        async with asyncio.timeout(allowance):
+            return await operation()
+    except TimeoutError:
+        return {"error": "Gmail retrieval timed out; the requested read was not completed."}
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("Gmail retrieval failed: %s", exc)
+        return {"error": str(exc)}
 
 
-def _processed_to_schema(email: ProcessedEmail) -> GmailSearchEmail:
-    """Convert shared processed email into GmailSearchEmail schema."""
+async def task_email_search(search_query: str, mode: str = "auto", page_token: str | None = None) -> Any:
+    if not isinstance(search_query, str) or not search_query.strip():
+        return {"error": "search_query must not be empty"}
+    if mode not in {"auto", "preview", "discover", "all"}:
+        return {"error": "mode must be auto, preview, discover, or all"}
+    if page_token is not None and (not isinstance(page_token, str) or len(page_token) > 4096):
+        return {"error": "Invalid Gmail page token"}
+    mailbox = get_active_gmail_user_id()
+    if not mailbox:
+        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+    query = search_query.strip()
+    preview = mode == "preview" or mode == "auto" and re.fullmatch(r"(?:(?:is:unread|in:inbox|newer_than:\d+[dmy])\s*)+", query, re.IGNORECASE)
 
-    return GmailSearchEmail(
-        id=email.id,
-        thread_id=email.thread_id,
-        query=email.query,
-        subject=email.subject,
-        sender=email.sender,
-        recipient=email.recipient,
-        timestamp=email.timestamp,
-        label_ids=list(email.label_ids),
-        clean_text=email.clean_text,
-        has_attachments=email.has_attachments,
-        attachment_count=email.attachment_count,
-        attachment_filenames=list(email.attachment_filenames),
-    )
+    async def discover():
+        page_size = 10 if preview else min(25, max(1, _byte_limit() // 1800))
+        arguments = {"query": query, "max_results": page_size, "include_payload": False, "verbose": False, "include_spam_trash": False, "format": "metadata", "metadata_headers": ["From", "To", "Subject", "Date"]}
+        if page_token:
+            arguments["page_token"] = page_token
+        data = await _invoke("GMAIL_FETCH_EMAILS", mailbox, arguments)
+        raw_messages = data.get("messages")
+        if not isinstance(raw_messages, list):
+            raise ValueError("Gmail returned no valid message list")
+        if len(raw_messages) > page_size and not preview:
+            raise ValueError("Gmail exceeded the requested metadata page size; narrow the query")
+        by_id = {}
+        for message in raw_messages[:page_size]:
+            record = _metadata(message)
+            by_id.setdefault(record["id"], record)
+        messages = list(by_id.values())
+        next_token = data.get("nextPageToken") or None
+        if next_token is not None and not isinstance(next_token, str):
+            raise ValueError("Gmail returned an invalid page token")
+        if next_token and next_token == page_token:
+            raise ValueError("Gmail repeated a result page; query coverage is not complete")
+        return {
+            "mode": "preview" if preview else "discovery",
+            "query": query,
+            "messages": messages,
+            "body_scope": "headers",
+            "page_token": page_token,
+            "next_page_token": next_token,
+            "search_complete": not bool(next_token) and len(raw_messages) <= page_size,
+            "coverage_required": mode == "all",
+            "has_more": bool(next_token) or len(raw_messages) > page_size,
+            "returned_count": len(messages),
+            "total_count": None,
+            "content_scope": "Headers and snippets only; bodies were not read. Read a relevant thread/message with task_email_read. Follow next_page_token for exhaustive query coverage; matches are not orders.",
+        }
+
+    return await _bounded(discover)
 
 
-__all__ = [
-    "GmailSearchEmail",
-    "EmailSearchToolResult",
-    "build_registry",
-    "task_email_search",
-]
+def _cursor(artifact: str, index: int, offset: int) -> str:
+    return base64.urlsafe_b64encode(json.dumps([artifact, index, offset]).encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[str, int, int]:
+    if not isinstance(cursor, str) or len(cursor) > 1024:
+        raise ValueError("Invalid read cursor")
+    try:
+        data = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+    except (ValueError, TypeError):
+        raise ValueError("Invalid read cursor") from None
+    if not isinstance(data, list) or len(data) != 3 or not isinstance(data[0], str) or not re.fullmatch(r"[a-f0-9]{64}", data[0]) or any(type(value) is not int or value < 0 for value in data[1:]):
+        raise ValueError("Invalid read cursor")
+    return tuple(data)
+
+
+def _body_record(message: dict, thread_id: str | None) -> dict:
+    record = _metadata(message)
+    if thread_id and record["thread_id"] and record["thread_id"] != thread_id:
+        raise ValueError("Gmail returned a message from a different thread")
+    record["thread_id"] = record["thread_id"] or thread_id or ""
+    payload = message.get("payload")
+    record["body_available"] = any(isinstance(message.get(key), str) for key in ("messageText", "textBody", "htmlBody")) or bool(_EMAIL_CLEANER._extract_mime_body(payload, "text/html") or _EMAIL_CLEANER._extract_mime_body(payload, "text/plain")) or isinstance(payload, dict) and isinstance(payload.get("body"), dict) and payload["body"].get("data") == ""
+    record["clean_text"] = _EMAIL_CLEANER.clean_email_content(message)
+    attachments = message.get("attachmentList") or []
+    _, _, filenames = _EMAIL_CLEANER.extract_attachment_info(attachments if isinstance(attachments, list) else [])
+    record["attachment_filenames"] = filenames
+    return record
+
+
+async def _snapshot(mailbox: str, scope: str, thread_id: str | None, message_id: str | None, generation: int) -> str:
+    records = {}
+    page = None
+    seen = set()
+    for _ in range(MAX_THREAD_PAGES):
+        arguments = {"thread_id": thread_id} if thread_id else {"message_id": message_id, "format": "full"}
+        if page:
+            arguments["page_token"] = page
+        data = await _invoke("GMAIL_FETCH_MESSAGE_BY_THREAD_ID" if thread_id else "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID", mailbox, arguments)
+        raw_messages = data.get("messages") if thread_id else [data]
+        if not isinstance(raw_messages, list) or not raw_messages:
+            raise ValueError("Gmail returned no messages for the requested read")
+        for message in raw_messages:
+            record = _body_record(message, thread_id)
+            if message_id and record["id"] != message_id:
+                raise ValueError("Gmail returned a different message ID")
+            records[record["id"]] = record
+        source = json.dumps({"mailbox": mailbox, "scope_id": scope, "messages": sorted(records.values(), key=lambda record: (record["timestamp"], record["id"]))}, ensure_ascii=False)
+        if len(source.encode()) > MAX_SNAPSHOT_BYTES:
+            raise ValueError("Conversation exceeds the snapshot limit; read individual message IDs instead")
+        page = data.get("nextPageToken") or None
+        if not page:
+            context = current_request.get()
+            if context and context.stopped_reason:
+                raise asyncio.CancelledError()
+            return context_compactor.archive(source, generation=generation)
+        if not isinstance(page, str) or page in seen:
+            raise ValueError("Gmail repeated or invalidated a thread page; the conversation was not fully read")
+        seen.add(page)
+    raise ValueError("Conversation page limit reached; read individual message IDs instead")
+
+
+def _read_page(artifact: str, snapshot: dict, index: int, offset: int) -> dict:
+    records = snapshot["messages"]
+    if index >= len(records) or offset > len(records[index]["clean_text"]):
+        raise ValueError("Read cursor is outside the saved conversation")
+    result = {"scope_id": snapshot["scope_id"], "snapshot_id": artifact, "message_count": len(records), "messages": [], "body_scope": "full", "read_complete": False, "next_cursor": None}
+    limit = _byte_limit()
+    while index < len(records):
+        record = records[index]
+        text = record["clean_text"]
+        low, high = 0, len(text) - offset
+        while low < high:
+            middle = (low + high + 1) // 2
+            fragment = {**record, "clean_text": text[offset : offset + middle], "message_index": index, "body_offset": offset, "body_total_chars": len(text)}
+            candidate = {**result, "messages": result["messages"] + [fragment]}
+            if len(json.dumps(candidate).encode()) <= limit - 1024:
+                low = middle
+            else:
+                high = middle - 1
+        fragment = {**record, "clean_text": text[offset : offset + low], "message_index": index, "body_offset": offset, "body_total_chars": len(text)}
+        if len(json.dumps({**result, "messages": result["messages"] + [fragment]}).encode()) > limit - 1024 or low == 0 and offset < len(text):
+            break
+        result["messages"].append(fragment)
+        offset += low
+        if offset < len(text):
+            break
+        index += 1
+        offset = 0
+    if not result["messages"]:
+        raise ValueError("Message metadata exceeds the response allowance")
+    if index < len(records):
+        result["next_cursor"] = _cursor(artifact, index, offset)
+        result["body_scope"] = "fragments"
+    else:
+        result["read_complete"] = all(record["body_available"] for record in records)
+    unavailable = [record["id"] for record in records[:index] if not record["body_available"]]
+    result["remaining_message_count"] = len(records) - index + len(unavailable)
+    result["unread_message_ids"] = (unavailable + [record["id"] for record in records[index : index + 10]])[:10]
+    if not result["read_complete"]:
+        result["content_scope"] = "Continue next_cursor to finish the selected conversation. Missing bodies must not be inferred from snippets." if result["next_cursor"] else "Some messages have no readable body; try their individual IDs or report that specific gap."
+    return result
+
+
+async def task_email_read(thread_id: str | None = None, message_id: str | None = None, cursor: str | None = None) -> dict:
+    if bool(thread_id) == bool(message_id):
+        return {"error": "Provide exactly one thread_id or message_id from discovery"}
+    mailbox = get_active_gmail_user_id()
+    if not mailbox:
+        return {"error": "Gmail not connected. Please connect Gmail in settings first."}
+
+    async def read():
+        identifier = _identifier(thread_id or message_id)
+        scope = ("thread:" if thread_id else "message:") + identifier
+        generation = context_compactor.generation
+        if cursor:
+            artifact, index, offset = _decode_cursor(cursor)
+        else:
+            artifact = await _snapshot(mailbox, scope, thread_id, message_id, generation)
+            index, offset = 0, 0
+        path = context_compactor.directory / f"{artifact}.json"
+        try:
+            snapshot = json.loads(json.loads(path.read_text(encoding="utf-8"))["source"])
+        except (FileNotFoundError, KeyError, ValueError):
+            raise ValueError("Saved read is unavailable; restart the read without a cursor") from None
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("messages"), list):
+            raise ValueError("Read cursor does not reference a saved conversation")
+        if snapshot.get("mailbox") != mailbox or snapshot.get("scope_id") != scope:
+            raise ValueError("Read cursor does not belong to this mailbox and conversation")
+        if generation != context_compactor.generation:
+            raise ValueError("Conversation data was cleared; restart the read")
+        return _read_page(artifact, snapshot, index, offset)
+
+    return await _bounded(read)
+
+
+def build_registry(agent_name: str) -> Dict[str, Callable[..., Any]]:
+    return {TASK_TOOL_NAME: task_email_search, READ_TOOL_NAME: task_email_read}

@@ -142,9 +142,11 @@ class ContextCompactor:
         self._summary_loop = None
         self._summary_semaphore = None
 
-    def archive(self, source: str) -> str:
+    def archive(self, source: str, generation: int | None = None) -> str:
         identifier = hashlib.sha256(source.encode()).hexdigest()
         with self._lock:
+            if generation is not None and generation != self.generation:
+                raise ContextBudgetError("Conversation data was cleared during retrieval. Restart the read.")
             self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             path = self.directory / f"{identifier}.json"
             # Exclusive creation prevents concurrent requests from rewriting the same evidence.

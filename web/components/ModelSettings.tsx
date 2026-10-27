@@ -16,7 +16,14 @@ type SavedModel = {
   name: string;
   base_url?: string;
   has_api_key?: boolean;
+  context_length?: number;
+  discovered_context_length?: number | null;
+  context_length_override?: number;
+  discovery_metadata?: Record<string, unknown>;
 };
+
+type DiscoveredModel = Model & { metadata?: Record<string, unknown> };
+type EndpointValues = { base_url: string; api_key?: string; model: string; name: string; context_length_override: number | null };
 
 type Listing = { active: string | null; models: SavedModel[]; openrouter_key_configured: boolean };
 
@@ -45,30 +52,35 @@ function host(baseUrl = "") {
   }
 }
 
-function EndpointFields({ endpoints, disabled, onReady }: { endpoints: SavedModel[]; disabled: boolean; onReady: (fields: { base_url: string; api_key?: string; model: string; name: string } | null) => void }) {
-  const [baseUrl, setBaseUrl] = useState(() => endpoints[endpoints.length - 1]?.base_url ?? "");
+function EndpointFields({ endpoints, initial, disabled, onReady }: { endpoints: SavedModel[]; initial?: SavedModel; disabled: boolean; onReady: (fields: EndpointValues | null) => void }) {
+  const [baseUrl, setBaseUrl] = useState(() => initial?.base_url ?? endpoints[endpoints.length - 1]?.base_url ?? "");
   const [apiKey, setApiKey] = useState("");
-  const [name, setName] = useState("");
-  const [models, setModels] = useState<string[]>([]);
-  const [model, setModel] = useState("");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [models, setModels] = useState<DiscoveredModel[]>(initial ? [{ id: initial.model, name: initial.model, context_length: initial.discovered_context_length ?? (initial.context_length_override ? null : initial.context_length) ?? null, pricing: {}, metadata: initial.discovery_metadata }] : []);
+  const [overrides, setOverrides] = useState<Record<string, string>>(initial?.context_length_override ? { [initial.model]: String(initial.context_length_override) } : {});
+  const [model, setModel] = useState(initial?.model ?? "");
   const [discovering, setDiscovering] = useState(false);
   const [error, setError] = useState("");
   const id = useId();
   const savedKey = endpoints.some((endpoint) => endpoint.has_api_key && [endpoint.base_url, endpoint.base_url?.replace(/\/v1$/, "")].includes(baseUrl.trim().replace(/\/$/, "")));
   const busy = disabled || discovering;
+  const selected = models.find((option) => option.id === model);
+  const contextWindow = overrides[model] ?? "";
+  const contextOverride = contextWindow.trim() ? Number(contextWindow) : null;
+  const validContext = contextOverride === null || (Number.isSafeInteger(contextOverride) && contextOverride >= 1024);
 
   useEffect(() => {
-    onReady(model && baseUrl.trim() ? { base_url: baseUrl.trim(), ...(apiKey && { api_key: apiKey }), model, name } : null);
-  }, [apiKey, baseUrl, model, name, onReady]);
+    onReady(model && baseUrl.trim() && validContext ? { base_url: baseUrl.trim(), ...(apiKey && { api_key: apiKey }), model, name, context_length_override: contextOverride } : null);
+  }, [apiKey, baseUrl, model, name, contextOverride, validContext, onReady]);
 
   async function discover() {
     setDiscovering(true);
     setError("");
     try {
-      const data = await request<{ base_url: string; models: Model[] }>("/discover", { method: "POST", json: { base_url: baseUrl.trim(), ...(apiKey && { api_key: apiKey }) } });
+      const data = await request<{ base_url: string; models: DiscoveredModel[] }>("/discover", { method: "POST", json: { base_url: baseUrl.trim(), ...(apiKey && { api_key: apiKey }) } });
       const ids = data.models.map((option) => option.id);
       setBaseUrl(data.base_url);
-      setModels(ids);
+      setModels(data.models);
       setModel((current) => (ids.includes(current) ? current : ids.length === 1 ? ids[0] : ""));
     } catch (error) {
       setModels([]);
@@ -103,6 +115,7 @@ function EndpointFields({ endpoints, disabled, onReady }: { endpoints: SavedMode
             setBaseUrl(event.target.value);
             setModels([]);
             setModel("");
+            setOverrides({});
           }}
         />
         <p>Any OpenAI-compatible API: a hosted provider, or a server you run like Ollama, LM Studio, or vLLM.</p>
@@ -123,6 +136,7 @@ function EndpointFields({ endpoints, disabled, onReady }: { endpoints: SavedMode
             setApiKey(event.target.value);
             setModels([]);
             setModel("");
+            setOverrides({});
           }}
         />
       </div>
@@ -162,10 +176,10 @@ function EndpointFields({ endpoints, disabled, onReady }: { endpoints: SavedMode
               )}
               {models.map((option) => (
                 <option
-                  key={option}
-                  value={option}
+                  key={option.id}
+                  value={option.id}
                 >
-                  {option}
+                  {option.name}
                 </option>
               ))}
             </select>
@@ -173,6 +187,47 @@ function EndpointFields({ endpoints, disabled, onReady }: { endpoints: SavedMode
               {models.length} {models.length === 1 ? "model" : "models"} found.
             </p>
           </div>
+          {selected && (
+            <>
+              <div className={styles.field}>
+                <label htmlFor={`${id}-context`}>
+                  Context window (tokens) <span>Optional override</span>
+                </label>
+                <input
+                  id={`${id}-context`}
+                  className="input"
+                  type="number"
+                  min={1024}
+                  step={1}
+                  placeholder={selected.context_length ? String(selected.context_length) : "Use application default"}
+                  value={contextWindow}
+                  disabled={busy}
+                  aria-invalid={!validContext}
+                  aria-describedby={`${id}-context-help`}
+                  onChange={(event) => setOverrides((current) => ({ ...current, [model]: event.target.value }))}
+                />
+                <p id={`${id}-context-help`}>
+                  {selected.context_length ? `Discovered: ${selected.context_length.toLocaleString()} tokens.` : "The server did not report a recognized context-window size."} {contextOverride !== null ? "Your override will be used. Clear it to use automatic settings." : "Leave blank to use the discovered size, or the application default when unavailable."} Use the context size configured on your server.
+                </p>
+                {!validContext && (
+                  <p
+                    role="alert"
+                    className={styles.error}
+                  >
+                    Enter a whole number of at least 1,024 tokens.
+                  </p>
+                )}
+              </div>
+              {selected.metadata ? (
+                <details className={styles.details}>
+                  <summary>Discovery data for {selected.id}</summary>
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md bg-gray-50 p-3 text-xs">{JSON.stringify(selected.metadata, null, 2)}</pre>
+                </details>
+              ) : (
+                <p className="text-xs text-gray-500">Refresh models to see the server’s discovery data for this model.</p>
+              )}
+            </>
+          )}
           <div className={styles.field}>
             <label htmlFor={`${id}-name`}>
               Display name <span>Optional</span>
@@ -195,22 +250,23 @@ function EndpointFields({ endpoints, disabled, onReady }: { endpoints: SavedMode
   );
 }
 
-function AddModelForm({ catalog, catalogError, onRetryCatalog, endpoints, titleId, saving, setSaving, onAdded, onClose }: { catalog: Model[] | null; catalogError: string; onRetryCatalog: () => void; endpoints: SavedModel[]; titleId: string; saving: boolean; setSaving: (saving: boolean) => void; onAdded: (listing: Listing) => void; onClose: () => void }) {
-  const [source, setSource] = useState<Source>("openrouter");
-  const [openRouterModel, setOpenRouterModel] = useState("");
-  const [endpoint, setEndpoint] = useState<{ base_url: string; api_key?: string; model: string; name: string } | null>(null);
+function ModelForm({ initial, catalog, catalogError, onRetryCatalog, endpoints, titleId, saving, setSaving, onSaved, onClose }: { initial?: SavedModel; catalog: Model[] | null; catalogError: string; onRetryCatalog: () => void; endpoints: SavedModel[]; titleId: string; saving: boolean; setSaving: (saving: boolean) => void; onSaved: (listing: Listing) => void; onClose: () => void }) {
+  const [source, setSource] = useState<Source>(initial?.kind ?? "openrouter");
+  const [openRouterModel, setOpenRouterModel] = useState(initial?.model ?? "");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [endpoint, setEndpoint] = useState<EndpointValues | null>(null);
   const [activate, setActivate] = useState(true);
   const [error, setError] = useState("");
   const ready = source === "openrouter" ? Boolean(openRouterModel) : Boolean(endpoint);
 
-  async function add() {
+  async function save() {
     setSaving(true);
     setError("");
     try {
-      const body = source === "openrouter" ? { kind: source, model: openRouterModel } : { kind: source, ...endpoint };
-      onAdded(await request<Listing>("", { method: "POST", json: { ...body, activate } }));
+      const body = source === "openrouter" ? { kind: source, model: openRouterModel, name } : { kind: source, ...endpoint };
+      onSaved(await request<Listing>(initial ? `/${encodeURIComponent(initial.id)}` : "", { method: initial ? "PUT" : "POST", json: { ...body, activate } }));
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Unable to add model");
+      setError(error instanceof Error ? error.message : initial ? "Unable to save model" : "Unable to add model");
     } finally {
       setSaving(false);
     }
@@ -223,13 +279,13 @@ function AddModelForm({ catalog, catalogError, onRetryCatalog, endpoints, titleI
           id={titleId}
           className="text-lg font-semibold"
         >
-          Add a model
+          {initial ? "Edit model" : "Add a model"}
         </h2>
         <button
           onClick={onClose}
           disabled={saving}
           className="rounded-md p-2 hover:bg-gray-100"
-          aria-label="Close add model"
+          aria-label={initial ? "Close edit model" : "Close add model"}
         >
           ✕
         </button>
@@ -263,12 +319,27 @@ function AddModelForm({ catalog, catalogError, onRetryCatalog, endpoints, titleI
       >
         {source === "openrouter" ? (
           catalog ? (
-            <ModelSelector
-              models={catalog}
-              value={openRouterModel}
-              onChange={setOpenRouterModel}
-              disabled={saving}
-            />
+            <>
+              <ModelSelector
+                models={catalog}
+                value={openRouterModel}
+                onChange={setOpenRouterModel}
+                disabled={saving}
+              />
+              <div className={styles.field}>
+                <label htmlFor={`${titleId}-name`}>
+                  Display name <span>Optional</span>
+                </label>
+                <input
+                  id={`${titleId}-name`}
+                  className="input"
+                  value={name}
+                  maxLength={120}
+                  disabled={saving}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </div>
+            </>
           ) : catalogError ? (
             <div
               role="alert"
@@ -288,6 +359,7 @@ function AddModelForm({ catalog, catalogError, onRetryCatalog, endpoints, titleI
         ) : (
           <EndpointFields
             endpoints={endpoints}
+            initial={initial?.kind === source ? initial : undefined}
             disabled={saving}
             onReady={setEndpoint}
           />
@@ -302,15 +374,17 @@ function AddModelForm({ catalog, catalogError, onRetryCatalog, endpoints, titleI
         </p>
       )}
       <div className={styles.addActions}>
-        <label>
-          <input
-            type="checkbox"
-            checked={activate}
-            disabled={saving}
-            onChange={(event) => setActivate(event.target.checked)}
-          />
-          Use this model now
-        </label>
+        {!initial && (
+          <label>
+            <input
+              type="checkbox"
+              checked={activate}
+              disabled={saving}
+              onChange={(event) => setActivate(event.target.checked)}
+            />
+            Use this model now
+          </label>
+        )}
         <button
           type="button"
           className="rounded-md px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
@@ -324,17 +398,17 @@ function AddModelForm({ catalog, catalogError, onRetryCatalog, endpoints, titleI
           className="btn gap-2"
           disabled={saving || !ready}
           aria-busy={saving}
-          onClick={() => void add()}
+          onClick={() => void save()}
         >
           {saving && <Spinner className="rounded-full bg-white p-0.5" />}
-          {saving ? "Adding…" : "Add model"}
+          {saving ? (initial ? "Saving…" : "Adding…") : initial ? "Save changes" : "Add model"}
         </button>
       </div>
     </>
   );
 }
 
-function AddModelDialog({ open, onClose, ...form }: { open: boolean; onClose: () => void; catalog: Model[] | null; catalogError: string; onRetryCatalog: () => void; endpoints: SavedModel[]; onAdded: (listing: Listing) => void }) {
+function ModelDialog({ open, onClose, ...form }: { open: boolean; onClose: () => void; initial?: SavedModel; catalog: Model[] | null; catalogError: string; onRetryCatalog: () => void; endpoints: SavedModel[]; onSaved: (listing: Listing) => void }) {
   const [saving, setSaving] = useState(false);
   const titleId = useId();
 
@@ -347,7 +421,7 @@ function AddModelDialog({ open, onClose, ...form }: { open: boolean; onClose: ()
       panelClassName={`${styles.addDialog} !max-w-xl !overflow-hidden`}
     >
       {/* The dialog unmounts its contents once closed, so each open starts with a fresh form. */}
-      <AddModelForm
+      <ModelForm
         {...form}
         titleId={titleId}
         saving={saving}
@@ -364,7 +438,7 @@ function wait(duration: number) {
   return new Promise((resolve) => window.setTimeout(resolve, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : duration));
 }
 
-function RowMenu({ label, disabled, onUse, onRemove }: { label: string; disabled: boolean; onUse: () => void; onRemove: () => void }) {
+function RowMenu({ label, active, disabled, onUse, onEdit, onRemove }: { label: string; active: boolean; disabled: boolean; onUse: () => void; onEdit: () => void; onRemove: () => void }) {
   const [open, setOpen] = useState(false);
   const [present, setPresent] = useState(false);
   const [placement, setPlacement] = useState<"bottom" | "top">("bottom");
@@ -402,7 +476,7 @@ function RowMenu({ label, disabled, onUse, onRemove }: { label: string; disabled
     // Open upward when the scrolling panel has no room for the menu below the row.
     const trigger = triggerRef.current;
     const boundary = trigger?.closest('[role="tabpanel"]');
-    if (trigger && boundary) setPlacement(boundary.getBoundingClientRect().bottom - trigger.getBoundingClientRect().bottom < 96 ? "top" : "bottom");
+    if (trigger && boundary) setPlacement(boundary.getBoundingClientRect().bottom - trigger.getBoundingClientRect().bottom < (active ? 52 : 132) ? "top" : "bottom");
     initialFocus.current = focusIndex;
     setOpen(true);
   }
@@ -447,7 +521,7 @@ function RowMenu({ label, disabled, onUse, onRemove }: { label: string; disabled
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
-            show(event.key === "ArrowUp" ? 1 : 0);
+            show(event.key === "ArrowUp" ? (active ? 0 : 2) : 0);
           }
         }}
       >
@@ -497,24 +571,40 @@ function RowMenu({ label, disabled, onUse, onRemove }: { label: string; disabled
             tabIndex={-1}
             onClick={() => {
               close();
-              onUse();
+              onEdit();
             }}
           >
-            Use this model
+            Edit
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!open}
-            tabIndex={-1}
-            className={styles.menuDanger}
-            onClick={() => {
-              close();
-              onRemove();
-            }}
-          >
-            Remove
-          </button>
+          {!active && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!open}
+              tabIndex={-1}
+              onClick={() => {
+                close();
+                onUse();
+              }}
+            >
+              Use this model
+            </button>
+          )}
+          {!active && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!open}
+              tabIndex={-1}
+              className={styles.menuDanger}
+              onClick={() => {
+                close();
+                onRemove();
+              }}
+            >
+              Remove
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -637,6 +727,8 @@ export default function ModelSettings({ disabled }: { disabled: boolean }) {
   const [entering, setEntering] = useState("");
   const [actionError, setActionError] = useState("");
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<SavedModel | undefined>();
+  const [editingOpen, setEditingOpen] = useState(false);
   const [removal, setRemoval] = useState<Removal | null>(null);
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
   const rows = useRef(new Map<string, HTMLLIElement>());
@@ -774,9 +866,8 @@ export default function ModelSettings({ disabled }: { disabled: boolean }) {
                       <span className={styles.savedName}>{name}</span>
                       <span className={styles.modelId}>{name === model.model ? source : `${source} · ${model.model}`}</span>
                     </span>
-                    {isActive ? (
-                      <span className={styles.activeBadge}>Active</span>
-                    ) : pending === model.id ? (
+                    {isActive && <span className={styles.activeBadge}>Active</span>}
+                    {pending === model.id ? (
                       <span
                         className={styles.menuTrigger}
                         role="status"
@@ -787,7 +878,12 @@ export default function ModelSettings({ disabled }: { disabled: boolean }) {
                     ) : (
                       <RowMenu
                         label={name}
+                        active={isActive}
                         disabled={busy}
+                        onEdit={() => {
+                          setEditing(model);
+                          setEditingOpen(true);
+                        }}
                         onUse={() => void activate(model.id)}
                         onRemove={() => {
                           setRemoval({ id: model.id, name, hasApiKey: Boolean(model.has_api_key) });
@@ -813,17 +909,30 @@ export default function ModelSettings({ disabled }: { disabled: boolean }) {
           )}
         </>
       )}
-      <AddModelDialog
+      <ModelDialog
         open={adding}
         onClose={() => setAdding(false)}
         catalog={catalog}
         catalogError={catalogError}
         onRetryCatalog={() => setCatalogAttempt((value) => value + 1)}
         endpoints={listing?.models.filter((model) => model.kind === "openai_compatible") ?? []}
-        onAdded={(next) => {
+        onSaved={(next) => {
           setEntering(next.models.find((model) => !listing?.models.some((previous) => previous.id === model.id))?.id ?? "");
           setListing(next);
           setAdding(false);
+        }}
+      />
+      <ModelDialog
+        open={editingOpen}
+        onClose={() => setEditingOpen(false)}
+        initial={editing}
+        catalog={catalog}
+        catalogError={catalogError}
+        onRetryCatalog={() => setCatalogAttempt((value) => value + 1)}
+        endpoints={listing?.models.filter((model) => model.kind === "openai_compatible") ?? []}
+        onSaved={(next) => {
+          setListing(next);
+          setEditingOpen(false);
         }}
       />
       <RemoveModelDialog

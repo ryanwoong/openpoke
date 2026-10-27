@@ -4,6 +4,7 @@ from html import escape
 from pathlib import Path
 from typing import Dict, List
 
+from ...logging_config import logger
 from ...services.execution import get_agent_roster
 
 _prompt_path = Path(__file__).parent / "system_prompt.md"
@@ -17,17 +18,16 @@ def build_system_prompt() -> str:
     return f"{SYSTEM_PROMPT}\n\n{get_integration_context()}"
 
 
-# Build structured message with conversation history, active agents, and current turn
 def prepare_message_with_history(
     latest_text: str,
     transcript: str,
     message_type: str = "user",
 ) -> List[Dict[str, str]]:
-    """Compose a message that bundles history, roster, and the latest turn."""
+    """Compose a message that bundles history, bounded routing references, and the latest turn."""
     sections: List[str] = []
 
     sections.append(_render_conversation_history(transcript))
-    sections.append(f"<active_agents>\n{_render_active_agents()}\n</active_agents>")
+    sections.append(f"<recent_agent_dispatches>\n{_render_recent_dispatches()}\n</recent_agent_dispatches>")
     sections.append(_render_current_turn(latest_text, message_type))
 
     content = "\n\n".join(sections)
@@ -42,21 +42,21 @@ def _render_conversation_history(transcript: str) -> str:
     return f"<conversation_history>\n{history}\n</conversation_history>"
 
 
-# Format currently active execution agents into XML tags for LLM awareness
-def _render_active_agents() -> str:
-    roster = get_agent_roster()
-    roster.load()
-    agents = roster.get_agents()
-
-    if not agents:
-        return "None"
-
-    rendered: List[str] = []
-    for agent_name in agents:
-        name = escape(agent_name or "agent", quote=True)
-        rendered.append(f'<agent name="{name}" />')
-
-    return "\n".join(rendered)
+def _render_recent_dispatches() -> str:
+    try:
+        references = get_agent_roster().recent_dispatches()
+    except (OSError, ValueError):
+        logger.warning("Agent directory unavailable during prompt construction")
+        return "Directory unavailable; use find_agents to retry lookup."
+    rendered = []
+    size = 0
+    for reference in references:
+        attributes = " ".join(f'{key}="{escape(value, quote=True)}"' for key, value in reference.items())
+        entry = f"<dispatch {attributes} />"
+        if size + len(entry.encode("utf-8")) + 1 <= 8192:
+            rendered.append(entry)
+            size += len(entry.encode("utf-8")) + 1
+    return "\n".join(rendered) or "None"
 
 
 # Wrap the current message in appropriate XML tags based on sender type

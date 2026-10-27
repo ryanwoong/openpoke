@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import re
 from dataclasses import dataclass
@@ -37,12 +38,12 @@ class EmailTextCleaner:
             "header",
             ".footer",
             ".header",
-            "[class*=\"footer\"]",
-            "[class*=\"header\"]",
-            "[class*=\"tracking\"]",
-            "[class*=\"pixel\"]",
-            "[style*=\"display:none\"]",
-            "[style*=\"display: none\"]",
+            '[class*="footer"]',
+            '[class*="header"]',
+            '[class*="tracking"]',
+            '[class*="pixel"]',
+            '[style*="display:none"]',
+            '[style*="display: none"]',
         ]
 
     # ------------------------------------------------------------------
@@ -58,6 +59,8 @@ class EmailTextCleaner:
         if html_content:
             return self.clean_html_email(html_content)
         if text_content:
+            if re.search(r"<!doctype\s+html\b|<(?:html|head|body|style|script|table|div|p|span|a|br|hr|ul|ol|li|h[1-6]|strong|b|em|i|tr|td|section|article)(?=[\s/>])[^>]*>", text_content, re.IGNORECASE):
+                return self.clean_html_email(text_content)
             return self.post_process_text(text_content)
         return ""
 
@@ -129,11 +132,7 @@ class EmailTextCleaner:
             }
 
             query_params = parse_qs(parsed.query, keep_blank_values=False)
-            cleaned_params = {
-                key: value
-                for key, value in query_params.items()
-                if key.lower() not in tracking_params
-            }
+            cleaned_params = {key: value for key, value in query_params.items() if key.lower() not in tracking_params}
 
             new_query = urlencode(cleaned_params, doseq=True)
             new_parsed = parsed._replace(query=new_query)
@@ -188,40 +187,43 @@ class EmailTextCleaner:
         stripped = re.sub(r"\s+", " ", stripped)
         return self.post_process_text(stripped)
 
-    def _extract_html_body(self, message: Dict[str, Any]) -> Optional[str]:
-        payload = message.get("payload") or {}
-        if isinstance(payload, dict):
-            parts = payload.get("parts")
-            if isinstance(parts, list):
-                for part in parts:
-                    if not isinstance(part, dict):
-                        continue
-                    mime_type = part.get("mimeType") or ""
-                    if mime_type.lower() == "text/html":
-                        if body := part.get("body"):
-                            data = body.get("data")
-                            if isinstance(data, str):
-                                try:
-                                    import base64
+    def _extract_mime_body(self, part: Any, wanted_type: str) -> Optional[str]:
+        if not isinstance(part, dict) or part.get("filename"):
+            return None
+        headers = part.get("headers")
+        if isinstance(headers, list):
+            for header in headers:
+                if isinstance(header, dict) and str(header.get("name", "")).casefold() == "content-disposition" and str(header.get("value", "")).split(";", 1)[0].strip().casefold() == "attachment":
+                    return None
+        mime_type = part.get("mimeType", "")
+        mime_type = mime_type.split(";", 1)[0].strip().casefold() if isinstance(mime_type, str) else ""
+        if mime_type == wanted_type or not mime_type and wanted_type == "text/plain":
+            body = part.get("body")
+            data = body.get("data") if isinstance(body, dict) else None
+            if isinstance(data, str) and data:
+                try:
+                    encoded = re.sub(r"\s+", "", data)
+                    decoded = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True).decode("utf-8", errors="replace")
+                    if decoded.strip():
+                        return decoded
+                except ValueError:
+                    pass
+        parts = part.get("parts")
+        if isinstance(parts, list):
+            for child in parts:
+                if content := self._extract_mime_body(child, wanted_type):
+                    return content
+        return None
 
-                                    return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                                except Exception:
-                                    continue
-        return message.get("htmlBody")
+    def _extract_html_body(self, message: Dict[str, Any]) -> Optional[str]:
+        content = self._extract_mime_body(message.get("payload"), "text/html")
+        fallback = message.get("htmlBody")
+        return content or (fallback if isinstance(fallback, str) and fallback.strip() else None)
 
     def _extract_plain_body(self, message: Dict[str, Any]) -> Optional[str]:
-        payload = message.get("payload") or {}
-        if isinstance(payload, dict):
-            if body := payload.get("body"):
-                data = body.get("data")
-                if isinstance(data, str):
-                    try:
-                        import base64
-
-                        return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                    except Exception:
-                        pass
-        return message.get("textBody")
+        content = self._extract_mime_body(message.get("payload"), "text/plain")
+        fallback = next((message[key] for key in ("textBody", "messageText") if isinstance(message.get(key), str) and message[key].strip()), None)
+        return content or fallback
 
     def extract_attachment_info(self, attachments: Iterable[Any]) -> Tuple[bool, int, List[str]]:
         filenames: List[str] = []
@@ -256,6 +258,7 @@ class ProcessedEmail:
 # ----------------------------------------------------------------------
 # Helpers shared across modules
 # ----------------------------------------------------------------------
+
 
 # Parse Gmail timestamp string into timezone-aware datetime object
 def parse_gmail_timestamp(raw: Optional[str]) -> Optional[datetime]:
@@ -352,9 +355,7 @@ def parse_gmail_fetch_response(
     emails: List[ProcessedEmail] = []
     next_page: Optional[str] = None
 
-    containers = [raw_result] if isinstance(raw_result, dict) else (
-        raw_result if isinstance(raw_result, list) else []
-    )
+    containers = [raw_result] if isinstance(raw_result, dict) else (raw_result if isinstance(raw_result, list) else [])
 
     for container in containers:
         if not isinstance(container, dict):

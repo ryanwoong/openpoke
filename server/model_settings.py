@@ -78,6 +78,17 @@ class SavedModelStore:
             self._save()
             return dict(entry)
 
+    def update(self, model_id: str, entry: dict[str, Any]) -> None:
+        with self._lock:
+            index = next((index for index, model in enumerate(self._models) if model["id"] == model_id), None)
+            if index is None:
+                raise KeyError(model_id)
+            identity = (entry["kind"], entry["model"], entry.get("base_url", ""))
+            if any(model["id"] != model_id and (model["kind"], model["model"], model.get("base_url", "")) == identity for model in self._models):
+                raise ValueError("This model is already saved")
+            self._models[index] = {**entry, "id": model_id}
+            self._save()
+
     def activate(self, model_id: str) -> None:
         with self._lock:
             if not any(model["id"] == model_id for model in self._models):
@@ -148,12 +159,14 @@ async def discover_endpoint_models(base_url: str, api_key: str = "") -> tuple[st
             if not ids:
                 raise ValueError("Server returned no models")
             lengths = {}
+            metadata = {}
             for item in data:
                 if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    metadata[item["id"]] = item
                     length = item.get("context_length") or item.get("max_model_len")
                     if isinstance(length, int) and not isinstance(length, bool) and length >= 1024:
                         lengths[item["id"]] = length
-            return candidate, [{"id": model_id, "name": model_id, "context_length": lengths.get(model_id), "pricing": {}} for model_id in ids]
+            return candidate, [{"id": model_id, "name": model_id, "context_length": lengths.get(model_id), "pricing": {}, "metadata": metadata[model_id]} for model_id in ids]
     raise ValueError("Server did not return an OpenAI-compatible model list")
 
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from ...logging_config import logger
-from ...services.conversation.request_context import create_request_task
+from ...services.conversation.request_context import create_request_task, current_request
 from ...services.conversation import get_conversation_log
 from ...services.execution import get_agent_roster, get_execution_agent_logs
 from ..execution_agent.batch_manager import ExecutionBatchManager
@@ -27,16 +27,30 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "find_agents",
+            "description": "Search for an agent handling the same specific task before creating one. Query the subject, person, order, or project rather than a capability like email search. Returns up to five keyword candidates, not execution history; compare their purposes before reuse.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 256}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "send_message_to_agent",
-            "description": "Deliver instructions to a specific execution agent. Creates a new agent if the name doesn't exist in the roster, or reuses an existing one.",
+            "description": "Delegate a specific ongoing task. Reuse an exact existing name only for that same task; shared tools or mailbox alone do not justify reuse. After discovery, use a new task-specific name if no agent fits.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "agent_name": {
                         "type": "string",
-                        "description": "Human-readable agent name describing its purpose (e.g., 'Vercel Job Offer', 'Email to Sharanjeet'). This name will be used to identify and potentially reuse the agent.",
+                        "description": "Exact existing name for the same ongoing task, or a new task-specific name such as 'Chipotle Orders', 'September 1 Emails', 'Emails from Jai', or 'Subaru Parts Order'. Do not create generic names such as 'Email Search Agent'.",
                     },
-                    "instructions": {"type": "string", "description": "Instructions for the agent to execute."},
+                    "instructions": {"type": "string", "description": "Instructions for the agent to execute, including relevant available conversation context."},
+                    "purpose": {"type": "string", "maxLength": 256, "description": "Short searchable purpose identifying the task subject and scope, not just its tools. Required in practice for new agents; existing purposes are preserved."},
                 },
                 "required": ["agent_name", "instructions"],
                 "additionalProperties": False,
@@ -110,45 +124,37 @@ TOOL_SCHEMAS = [
 _EXECUTION_BATCH_MANAGER = ExecutionBatchManager()
 
 
-# Create or reuse execution agent and dispatch instructions asynchronously
-def send_message_to_agent(agent_name: str, instructions: str) -> ToolResult:
-    """Send instructions to an execution agent."""
-    roster = get_agent_roster()
-    roster.load()
-    existing_agents = set(roster.get_agents())
-    is_new = agent_name not in existing_agents
+def find_agents(query: str) -> ToolResult:
+    return ToolResult(success=True, payload=get_agent_roster().find_agents(query))
 
-    if is_new:
-        roster.add_agent(agent_name)
 
-    get_execution_agent_logs().record_request(agent_name, instructions)
-
-    action = "Created" if is_new else "Reused"
-    logger.info(f"{action} agent: {agent_name}")
+def send_message_to_agent(agent_name: str, instructions: str, purpose: Optional[str] = None) -> ToolResult:
+    """Submit work and persist its routing association before yielding to the worker."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return ToolResult(success=False, payload={"error": "No event loop available"})
 
     async def _execute_async() -> None:
         try:
             result = await _EXECUTION_BATCH_MANAGER.execute_agent(agent_name, instructions)
             status = "SUCCESS" if result.success else "FAILED"
             logger.info(f"Agent '{agent_name}' completed: {status}")
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             logger.error(f"Agent '{agent_name}' failed: {str(exc)}")
 
+    task = create_request_task(_execute_async())
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        logger.error("No running event loop available for async execution")
-        return ToolResult(success=False, payload={"error": "No event loop available"})
-
-    create_request_task(_execute_async())
+        context = current_request.get()
+        is_new = get_agent_roster().record_dispatch(agent_name, context.request_id if context else None, purpose)
+        get_execution_agent_logs().record_request(agent_name, instructions)
+    except BaseException:
+        task.cancel()
+        raise
 
     return ToolResult(
         success=True,
-        payload={
-            "status": "submitted",
-            "agent_name": agent_name,
-            "new_agent_created": is_new,
-        },
+        payload={"status": "submitted", "agent_name": agent_name, "new_agent_created": is_new},
     )
 
 
@@ -226,6 +232,8 @@ def handle_tool_call(name: str, arguments: Any) -> ToolResult:
         else:
             return ToolResult(success=False, payload={"error": "Invalid arguments format"})
 
+        if name == "find_agents":
+            return find_agents(**args)
         if name == "send_message_to_agent":
             return send_message_to_agent(**args)
         if name == "send_message_to_user":
@@ -239,6 +247,8 @@ def handle_tool_call(name: str, arguments: Any) -> ToolResult:
         return ToolResult(success=False, payload={"error": f"Unknown tool: {name}"})
     except json.JSONDecodeError:
         return ToolResult(success=False, payload={"error": "Invalid JSON"})
+    except ValueError as exc:
+        return ToolResult(success=False, payload={"error": str(exc)})
     except TypeError as exc:
         return ToolResult(success=False, payload={"error": f"Missing required arguments: {exc}"})
     except Exception as exc:  # pragma: no cover - defensive

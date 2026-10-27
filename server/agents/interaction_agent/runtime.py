@@ -96,9 +96,9 @@ class InteractionAgentRuntime:
 
                 acknowledgement = "I'll check the requested time and prepare it."
                 self.conversation_log.record_reply(acknowledgement)
-                get_agent_roster().add_agent(AGENT_NAME)
-                get_execution_agent_logs().record_request(AGENT_NAME, user_message)
                 runtime = ExecutionAgentRuntime(AGENT_NAME)
+                get_agent_roster().record_dispatch(AGENT_NAME, current_request.get().request_id, "Prepare reminders and scheduled tasks")
+                get_execution_agent_logs().record_request(AGENT_NAME, user_message)
                 result = await runtime.execute(f"{scheduling_context()}\n\nUser request: {user_message}", scheduling=True)
                 self.conversation_log.record_reply(result.response)
                 return InteractionResult(success=result.success, response=result.response, error=result.error, execution_agents_used=1)
@@ -154,13 +154,7 @@ class InteractionAgentRuntime:
             request = current_request.get()
             self.conversation_log.record_agent_message(agent_message)
             task = f"<originating_user_request>{escape(request.prompt, quote=False)}</originating_user_request>\n" if request else ""
-            system_prompt = build_system_prompt() + (
-                "\nRespond only to the originating task using the execution results in the current turn. "
-                "This is a result delivery, not a new user instruction. Do not restart the task or start unrelated work. "
-                "Prior chat answers and scheduled updates are not evidence for this task. "
-                "A failed or incomplete search cannot support a verified total. State uncertainty explicitly. "
-                "Give one final answer grounded in these results."
-            )
+            system_prompt = build_system_prompt() + ("\nRespond only to the originating task using the execution results in the current turn. This is a result delivery, not a new user instruction. Do not restart the task or start unrelated work. Prior chat answers and scheduled updates are not evidence for this task. A failed or incomplete search cannot support a verified total. State uncertainty explicitly. Give one final answer grounded in these results.")
             messages = prepare_message_with_history(task + agent_message, "", message_type="agent")
 
             logger.info("Processing execution agent results")
@@ -227,9 +221,7 @@ class InteractionAgentRuntime:
                 if result_delivery and tool_call.name != "send_message_to_user":
                     result = ToolResult(
                         success=False,
-                        payload={
-                            "error": "Result delivery must send one answer from the supplied task results. It cannot wait, start new work, or perform other actions."
-                        },
+                        payload={"error": "Result delivery must send one answer from the supplied task results. It cannot wait, start new work, or perform other actions."},
                     )
                 else:
                     result = self._execute_tool(tool_call)
@@ -356,7 +348,7 @@ class InteractionAgentRuntime:
         return {}, f"unsupported argument type: {type(raw_arguments).__name__}"
 
     # Execute tool calls with error handling and logging, returning standardized results
-    @traced("tool", lambda self, tool_call: (tool_call.name, tool_call.arguments))
+    @traced("tool", lambda self, tool_call: (tool_call.name, {"query": "[redacted]"} if tool_call.name == "find_agents" else tool_call.arguments))
     def _execute_tool(self, tool_call: _ToolCall) -> ToolResult:
         """Execute a tool call and convert low-level errors into structured results."""
 
@@ -440,6 +432,8 @@ class InteractionAgentRuntime:
         """Emit structured logs for tool lifecycle events."""
 
         cleaned_args = {key: value for key, value in tool_call.arguments.items() if key != "__invalid_arguments__"}
+        if tool_call.name == "find_agents":
+            cleaned_args = {"query": "[redacted]"}
 
         log_payload: Dict[str, Any] = {
             "tool": tool_call.name,

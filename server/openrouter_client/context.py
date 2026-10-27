@@ -46,11 +46,7 @@ def input_budget(window: int, reserve: int) -> int:
 
 def context_overflow(status: int, body: str) -> tuple[bool, int | None]:
     text = body.lower()
-    rejected = (
-        status in (400, 413, 422)
-        and "context" in text
-        and any(term in text for term in ("exceed", "too long", "no room", "too many tokens", "maximum context"))
-    )
+    rejected = status in (400, 413, 422) and "context" in text and any(term in text for term in ("exceed", "too long", "no room", "too many tokens", "maximum context"))
     if not rejected:
         return False, None
     patterns = (r"context\s*\((\d+)\)", r"maximum context length (?:is|of)\s*(\d+)", r"context (?:window|length|size)[^\d]{0,20}(\d+)")
@@ -66,7 +62,7 @@ def framed_history(content: str):
     if match is None:
         return None
     suffix = content[match.end() :].lstrip()
-    if suffix.startswith(("<active_agents>", "<new_user_message>", "<new_agent_message>", "Update the working-memory briefing")):
+    if suffix.startswith(("<active_agents>", "<recent_agent_dispatches>", "<new_user_message>", "<new_agent_message>", "Update the working-memory briefing")):
         return match
     return None
 
@@ -146,9 +142,11 @@ class ContextCompactor:
         self._summary_loop = None
         self._summary_semaphore = None
 
-    def archive(self, source: str) -> str:
+    def archive(self, source: str, generation: int | None = None) -> str:
         identifier = hashlib.sha256(source.encode()).hexdigest()
         with self._lock:
+            if generation is not None and generation != self.generation:
+                raise ContextBudgetError("Conversation data was cleared during retrieval. Restart the read.")
             self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             path = self.directory / f"{identifier}.json"
             # Exclusive creation prevents concurrent requests from rewriting the same evidence.
@@ -175,9 +173,7 @@ class ContextCompactor:
         chunk_chars = max(512, min(18000, budget // 4 * 2))
         chunks = source_chunks(source, chunk_chars)
         if len(chunks) > MAX_SUMMARY_CHUNKS:
-            raise ContextBudgetError(
-                "There is too much source material to compact safely in one request. Narrow the date range or split the task; the original material remains saved."
-            )
+            raise ContextBudgetError("There is too much source material to compact safely in one request. Narrow the date range or split the task; the original material remains saved.")
         output_tokens = min(768, max(128, budget // 16))
         loop = asyncio.get_running_loop()
         with self._lock:
@@ -308,15 +304,9 @@ class ContextCompactor:
         old = [message for message in messages[:latest_user] if message.get("role") not in ("system", "developer")]
         if old:
             summary = await self.summarize(json.dumps(old, ensure_ascii=False, default=str), budget, summarize, scope)
-            prepared["messages"] = (
-                [message for message in messages[:latest_user] if message.get("role") in ("system", "developer")]
-                + [{"role": "user", "content": summary}]
-                + messages[latest_user:]
-            )
+            prepared["messages"] = [message for message in messages[:latest_user] if message.get("role") in ("system", "developer")] + [{"role": "user", "content": summary}] + messages[latest_user:]
         if estimate_tokens(prepared) > budget:
-            raise ContextBudgetError(
-                "The current task, instructions, tools, or required evidence cannot fit this model's context window. Split the request or choose a model with a larger context window. Nothing was removed from the saved conversation."
-            )
+            raise ContextBudgetError("The current task, instructions, tools, or required evidence cannot fit this model's context window. Split the request or choose a model with a larger context window. Nothing was removed from the saved conversation.")
         return prepared, True
 
 
